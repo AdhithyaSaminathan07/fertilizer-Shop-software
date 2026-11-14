@@ -5,17 +5,24 @@ import fs from "fs";
 import path from "path";
 import readline from "readline";
 
-// Manually parse .env.local if present
+// Safely parse .env.local or .env without external dependencies
 function loadEnv() {
-  const envPath = path.resolve(process.cwd(), ".env.local");
-  if (fs.existsSync(envPath)) {
-    const lines = fs.readFileSync(envPath, "utf8").split("\n");
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const [key, ...values] = trimmed.split("=");
-      if (key && values.length > 0) {
-        process.env[key.trim()] = values.join("=").trim().replace(/^["']|["']$/g, "");
+  const envFiles = [".env.local", ".env"];
+  for (const file of envFiles) {
+    const envPath = path.resolve(process.cwd(), file);
+    if (fs.existsSync(envPath)) {
+      const lines = fs.readFileSync(envPath, "utf8").split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const [key, ...values] = trimmed.split("=");
+        if (key && values.length > 0) {
+          const varKey = key.trim();
+          // Do not overwrite existing process.env variables
+          if (!process.env[varKey]) {
+            process.env[varKey] = values.join("=").trim().replace(/^["']|["']$/g, "");
+          }
+        }
       }
     }
   }
@@ -37,16 +44,17 @@ async function promptPasswordInteractive() {
       input: process.stdin,
       output: process.stdout,
     });
-    rl.question("Enter initial Owner password (leave blank to auto-generate): ", (ans) => {
+    rl.question("Enter initial Admin password (leave blank to auto-generate): ", (ans) => {
       rl.close();
       resolve(ans.trim());
     });
   });
 }
 
-async function bootstrapOwner() {
+export async function bootstrapOwner(options = {}) {
+  const isDirectRun = options.isDirectRun ?? true;
   console.log("=================================================");
-  console.log("   KASI AGRI AGENCIES - OWNER BOOTSTRAP TOOL    ");
+  console.log("    KASI AGRI AGENCIES - OWNER/ADMIN SETUP      ");
   console.log("=================================================");
 
   // Enforce security rule: no command line arguments containing passwords!
@@ -56,38 +64,54 @@ async function bootstrapOwner() {
   if (hasCliPassword) {
     console.error("\n[SECURITY BLOCK] Passing passwords as command-line arguments is forbidden.");
     console.error("CLI arguments are exposed in process listings (e.g. ps, top, Task Manager).");
-    console.error("Please supply the password via OWNER_INITIAL_PASSWORD environment variable");
+    console.error("Please supply the password via KASI_OWNER_INITIAL_PASSWORD in .env.local");
     console.error("or run the script interactively without command-line password arguments.\n");
-    process.exit(1);
+    if (isDirectRun) process.exit(1);
+    throw new Error("CLI password argument forbidden");
   }
 
-  console.log("Connecting to database...");
-  await mongoose.connect(MONGODB_URI, { bufferCommands: false });
+  const targetUri = options.mongoUri || MONGODB_URI;
+  console.log(`Connecting to database...`);
+  await mongoose.connect(targetUri, { bufferCommands: false });
 
   const db = mongoose.connection.db;
   const usersCollection = db.collection("users");
   const auditCollection = db.collection("auditlogs");
 
-  // Enforce zero-overwrite security: check if any owner already exists
+  // Check if an Owner account already exists
   const existingOwner = await usersCollection.findOne({ role: "OWNER" });
   if (existingOwner) {
-    console.error("\n[SECURITY BLOCK] An Owner account already exists in the system:");
-    console.error(`- Username: ${existingOwner.username}`);
-    console.error(`- Name:     ${existingOwner.name}`);
-    console.error("\nRecreating or overwriting an existing Owner is strictly prohibited.");
-    console.error("To reset an owner password, contact system administrator directly via secure channel.");
-    await mongoose.disconnect();
-    process.exit(1);
+    console.log("\n[STATUS] An Owner/Admin account already exists in the system:");
+    console.log(`- Display Name: ${existingOwner.name}`);
+    console.log(`- Username:     ${existingOwner.username}`);
+    console.log(`- Email:        ${existingOwner.email}`);
+    console.log(`- Role:         ${existingOwner.role}`);
+    console.log(`- Status:       ${existingOwner.status}`);
+    console.log("\n[SECURITY NOTICE] Existing Owner account was NOT modified.");
+    console.log("Zero-overwrite policy guarantees existing administrative credentials are preserved.");
+    console.log("To securely reset the owner password, run: npm run reset:owner\n");
+    console.log("=================================================\n");
+
+    if (isDirectRun) {
+      await mongoose.disconnect();
+      process.exit(0);
+    }
+    return { created: false, existingUser: existingOwner };
   }
 
-  // Obtain password securely: Env Var -> Interactive Stdin -> Cryptographic Generator
-  let password = process.env.OWNER_INITIAL_PASSWORD;
-  if (password) {
-    // Immediately clear from process.env memory
-    delete process.env.OWNER_INITIAL_PASSWORD;
-  }
+  // Load configuration from environment variables or options
+  const name = options.name || process.env.KASI_OWNER_NAME || "Admin";
+  const username = (options.username || process.env.KASI_OWNER_USERNAME || "admin").toLowerCase().trim();
+  const email = (options.email || process.env.KASI_OWNER_EMAIL || "admin@kasiagri.com").toLowerCase().trim();
+  const phone = options.phone || process.env.KASI_OWNER_PHONE || "9842100000";
 
-  if (!password && process.stdin.isTTY) {
+  let password = options.password || process.env.KASI_OWNER_INITIAL_PASSWORD || process.env.OWNER_INITIAL_PASSWORD;
+
+  // Immediately clear raw password from process environment
+  if (process.env.KASI_OWNER_INITIAL_PASSWORD) delete process.env.KASI_OWNER_INITIAL_PASSWORD;
+  if (process.env.OWNER_INITIAL_PASSWORD) delete process.env.OWNER_INITIAL_PASSWORD;
+
+  if (!password && process.stdin.isTTY && isDirectRun) {
     const interactive = await promptPasswordInteractive();
     if (interactive) {
       password = interactive;
@@ -100,12 +124,7 @@ async function bootstrapOwner() {
     wasGenerated = true;
   }
 
-  const name = "R. Balamurugan";
-  const username = "balamurugan";
-  const email = "balamurugan@kasiagri.com";
-  const phone = "9842100000";
-
-  console.log(`Hashing password with Argon2id for Proprietor: ${name}...`);
+  console.log(`Hashing initial password with Argon2id for: ${name} (${username})...`);
   const passwordHash = await hash(password, ARGON2_OPTIONS);
 
   const ownerDoc = {
@@ -133,25 +152,35 @@ async function bootstrapOwner() {
     timestamp: new Date(),
   });
 
-  console.log("\n[SUCCESS] Owner account bootstrapped securely:");
-  console.log(`- Proprietor: ${name}`);
-  console.log(`- Username:   ${username}`);
-  console.log(`- Email:      ${email}`);
-  console.log(`- Role:       OWNER (Full system permissions)`);
-  console.log(`- Status:     ACTIVE`);
+  console.log("\n[SUCCESS] Initial Owner/Admin account provisioned successfully:");
+  console.log(`- Display Name: ${name}`);
+  console.log(`- Username:     ${username}`);
+  console.log(`- Email:        ${email}`);
+  console.log(`- Role:         OWNER (Full system permissions)`);
+  console.log(`- Status:       ACTIVE`);
+  console.log(`- Security:     Argon2id hashed (Plaintext password never stored)`);
+
   if (wasGenerated) {
-    console.log(`\n>>> SECURE GENERATED INITIAL PASSWORD: [ ${password} ]`);
-    console.log(">>> Please record this initial password securely. It will not be shown again.");
+    console.log(`\n[NOTICE] Initial password was cryptographically generated.`);
+    console.log(`If you did not configure KASI_OWNER_INITIAL_PASSWORD in .env.local,`);
+    console.log(`set it in .env.local and run 'npm run reset:owner' to configure your preferred password.`);
   } else {
-    console.log("\n>>> Initial password has been set from environment / stdin.");
+    console.log(`\n[NOTICE] Account configured with password provided via environment variable.`);
   }
   console.log("=================================================\n");
 
-  await mongoose.disconnect();
-  process.exit(0);
+  if (isDirectRun) {
+    await mongoose.disconnect();
+    process.exit(0);
+  }
+
+  return { created: true, id: result.insertedId, username, email };
 }
 
-bootstrapOwner().catch((err) => {
-  console.error("Owner bootstrap failed:", err);
-  process.exit(1);
-});
+// Only auto-run if invoked directly via CLI (node scripts/bootstrap-owner.mjs)
+if (process.argv[1] && process.argv[1].endsWith("bootstrap-owner.mjs")) {
+  bootstrapOwner({ isDirectRun: true }).catch((err) => {
+    console.error("Owner bootstrap failed:", err.message);
+    process.exit(1);
+  });
+}

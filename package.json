@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint .",
     "seed:owner": "node scripts/bootstrap-owner.mjs",
+    "reset:owner": "node scripts/reset-owner-password.mjs",
     "test:auth": "node scripts/test-auth-suite.mjs",
     "typecheck": "tsc --noEmit"
   },
