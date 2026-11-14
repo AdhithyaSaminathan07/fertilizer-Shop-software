@@ -162,7 +162,20 @@ export function hasPermission(user: SafeUser | null, permission: Permission): bo
   if (user.role === "OWNER") {
     return true;
   }
-  return user.permissions.includes(permission);
+  if (user.permissions.includes(permission)) {
+    return true;
+  }
+  // Seamless aliases for inventory permissions
+  if (permission === "inventory:read" && user.permissions.includes("inventory:view" as Permission)) {
+    return true;
+  }
+  if (permission === "inventory:write" && user.permissions.includes("inventory:manage" as Permission)) {
+    return true;
+  }
+  if (permission === "inventory:delete" && user.permissions.includes("inventory:manage" as Permission)) {
+    return true;
+  }
+  return false;
 }
 
 /**

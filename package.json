@@ -10,6 +10,7 @@
     "seed:owner": "node scripts/bootstrap-owner.mjs",
     "reset:owner": "node scripts/reset-owner-password.mjs",
     "test:auth": "node scripts/test-auth-suite.mjs",
+    "test:product": "node scripts/test-product-suite.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

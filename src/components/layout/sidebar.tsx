@@ -19,6 +19,8 @@ import {
   ShieldCheck,
   Building2,
   UserCheck,
+  Tag,
+  Package,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -38,10 +40,19 @@ export const NAV_ITEMS: NavItem[] = [
     icon: LayoutDashboard,
   },
   {
-    title: "Inventory & Stocks",
+    title: "Products & Catalog",
+    href: "/products",
+    icon: Package,
+  },
+  {
+    title: "Categories",
+    href: "/categories",
+    icon: Tag,
+  },
+  {
+    title: "Inventory Overview",
     href: "/inventory",
     icon: Boxes,
-    badge: "3 Categories",
   },
   {
     title: "Farmer Accounts",

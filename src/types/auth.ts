@@ -3,6 +3,9 @@ export type UserRole = "OWNER" | "EMPLOYEE";
 export type UserStatus = "ACTIVE" | "INACTIVE";
 
 export const PERMISSIONS = [
+  "inventory:read",
+  "inventory:write",
+  "inventory:delete",
   "inventory:view",
   "inventory:manage",
   "billing:create",
@@ -33,8 +36,9 @@ export const PERMISSION_GROUPS: PermissionGroup[] = [
   {
     name: "Inventory & Stocks",
     permissions: [
-      { key: "inventory:view", label: "View Stocks", description: "Can check stock levels and prices" },
-      { key: "inventory:manage", label: "Manage Inventory", description: "Can adjust stock and add new products" },
+      { key: "inventory:read", label: "View Products & Stocks", description: "Can check catalog, stock levels, and prices" },
+      { key: "inventory:write", label: "Manage Products & Categories", description: "Can create and edit products, categories, and conversions" },
+      { key: "inventory:delete", label: "Archive / Delete Inventory", description: "Can deactivate or archive products and categories" },
     ],
   },
   {
