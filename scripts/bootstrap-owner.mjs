@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { hash } from "@node-rs/argon2";
 import fs from "fs";
 import path from "path";
+import readline from "readline";
 
 // Manually parse .env.local if present
 function loadEnv() {
@@ -30,10 +31,35 @@ const ARGON2_OPTIONS = {
   parallelism: 4,
 };
 
+async function promptPasswordInteractive() {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    rl.question("Enter initial Owner password (leave blank to auto-generate): ", (ans) => {
+      rl.close();
+      resolve(ans.trim());
+    });
+  });
+}
+
 async function bootstrapOwner() {
   console.log("=================================================");
   console.log("   KASI AGRI AGENCIES - OWNER BOOTSTRAP TOOL    ");
   console.log("=================================================");
+
+  // Enforce security rule: no command line arguments containing passwords!
+  const hasCliPassword = process.argv.some(
+    (arg) => arg.startsWith("--password") || arg.startsWith("-p")
+  );
+  if (hasCliPassword) {
+    console.error("\n[SECURITY BLOCK] Passing passwords as command-line arguments is forbidden.");
+    console.error("CLI arguments are exposed in process listings (e.g. ps, top, Task Manager).");
+    console.error("Please supply the password via OWNER_INITIAL_PASSWORD environment variable");
+    console.error("or run the script interactively without command-line password arguments.\n");
+    process.exit(1);
+  }
 
   console.log("Connecting to database...");
   await mongoose.connect(MONGODB_URI, { bufferCommands: false });
@@ -54,19 +80,23 @@ async function bootstrapOwner() {
     process.exit(1);
   }
 
-  // Parse CLI args or env
-  const args = process.argv.slice(2);
+  // Obtain password securely: Env Var -> Interactive Stdin -> Cryptographic Generator
   let password = process.env.OWNER_INITIAL_PASSWORD;
-  for (const arg of args) {
-    if (arg.startsWith("--password=")) {
-      password = arg.split("=")[1];
+  if (password) {
+    // Immediately clear from process.env memory
+    delete process.env.OWNER_INITIAL_PASSWORD;
+  }
+
+  if (!password && process.stdin.isTTY) {
+    const interactive = await promptPasswordInteractive();
+    if (interactive) {
+      password = interactive;
     }
   }
 
-  // If no password provided, generate a cryptographically strong 16-character password
   let wasGenerated = false;
   if (!password) {
-    password = `Kasi@${crypto.randomBytes(6).toString("hex")}#${crypto.randomInt(10, 99)}`;
+    password = `Kasi@${crypto.randomBytes(8).toString("hex")}#${crypto.randomInt(10, 99)}`;
     wasGenerated = true;
   }
 
@@ -94,6 +124,7 @@ async function bootstrapOwner() {
 
   const result = await usersCollection.insertOne(ownerDoc);
 
+  // Write audit trail strictly without passwords or sensitive hashes
   await auditCollection.insertOne({
     action: "OWNER_BOOTSTRAP",
     targetUserId: result.insertedId,
@@ -112,7 +143,7 @@ async function bootstrapOwner() {
     console.log(`\n>>> SECURE GENERATED INITIAL PASSWORD: [ ${password} ]`);
     console.log(">>> Please record this initial password securely. It will not be shown again.");
   } else {
-    console.log("\n>>> Initial password has been set from environment/arguments.");
+    console.log("\n>>> Initial password has been set from environment / stdin.");
   }
   console.log("=================================================\n");
 
@@ -124,4 +155,3 @@ bootstrapOwner().catch((err) => {
   console.error("Owner bootstrap failed:", err);
   process.exit(1);
 });
-

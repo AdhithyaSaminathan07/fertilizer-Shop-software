@@ -27,12 +27,21 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const { identifier, password } = parsed.data;
   const rateLimitKey = `login:${ipAddress}:${identifier.toLowerCase()}`;
-  const rateLimit = checkRateLimit(rateLimitKey, 5, 15 * 60);
+  const rateLimit = await checkRateLimit(rateLimitKey, 5, 15 * 60);
 
   if (!rateLimit.success) {
-    return errorResponse(
-      `Too many failed login attempts. Please try again in ${rateLimit.resetSeconds} seconds.`,
-      HTTP_STATUS.UNPROCESSABLE_ENTITY
+    return NextResponse.json(
+      {
+        success: false,
+        error: `Too many failed login attempts. Please try again in ${rateLimit.resetSeconds} seconds.`,
+        timestamp: new Date().toISOString(),
+      },
+      {
+        status: HTTP_STATUS.TOO_MANY_REQUESTS,
+        headers: {
+          "Retry-After": String(rateLimit.resetSeconds),
+        },
+      }
     );
   }
 
@@ -49,7 +58,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (!user) {
     await logAuditEvent({
       action: "LOGIN_FAILED",
-      details: { reason: "User not found", identifier },
+      details: { reason: "User not found", identifierMasked: identifier.slice(0, 3) + "***" },
       ipAddress,
     });
     return errorResponse("Invalid username/email or password", HTTP_STATUS.UNAUTHORIZED);
@@ -84,7 +93,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   // Login successful: reset rate limit counter
-  resetRateLimit(rateLimitKey);
+  await resetRateLimit(rateLimitKey);
 
   // Update last login timestamp
   user.lastLoginAt = new Date();

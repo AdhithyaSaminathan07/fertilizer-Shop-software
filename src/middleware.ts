@@ -5,11 +5,44 @@ export const SESSION_COOKIE_NAME = "kasi_session";
 
 // Public routes that do not require authentication
 const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/health"];
+const MUTATING_METHODS = ["POST", "PATCH", "DELETE", "PUT"];
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  const method = request.method.toUpperCase();
 
-  // Allow static files, Next.js internal assets, and explicit public routes
+  // 1. Enforce CSRF & Cross-Origin validation for all mutating API requests
+  if (pathname.startsWith("/api/") && MUTATING_METHODS.includes(method)) {
+    const origin = request.headers.get("origin");
+    const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
+
+    if (origin && host) {
+      try {
+        const originHost = new URL(origin).host;
+        if (originHost !== host) {
+          return NextResponse.json(
+            {
+              success: false,
+              error: "Forbidden: Cross-origin request blocked (CSRF validation failed).",
+              timestamp: new Date().toISOString(),
+            },
+            { status: 403 }
+          );
+        }
+      } catch {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Forbidden: Malformed Origin header.",
+            timestamp: new Date().toISOString(),
+          },
+          { status: 403 }
+        );
+      }
+    }
+  }
+
+  // 2. Allow static files, Next.js internal assets, and explicit public routes
   if (
     pathname.startsWith("/_next") ||
     pathname.startsWith("/favicon.ico") ||

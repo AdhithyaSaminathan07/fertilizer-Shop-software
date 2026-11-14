@@ -166,6 +166,23 @@ export function hasPermission(user: SafeUser | null, permission: Permission): bo
 }
 
 /**
+ * Recursively sanitizes audit log details to guarantee credentials, hashes, and tokens are NEVER stored.
+ */
+function sanitizeAuditDetails(obj: Record<string, unknown>): Record<string, unknown> {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (/password|hash|token|secret|cookie|credential|authorization/i.test(key)) {
+      sanitized[key] = "[REDACTED]";
+    } else if (value && typeof value === "object" && !Array.isArray(value)) {
+      sanitized[key] = sanitizeAuditDetails(value as Record<string, unknown>);
+    } else {
+      sanitized[key] = value;
+    }
+  }
+  return sanitized;
+}
+
+/**
  * Records an audit log event in MongoDB.
  */
 export async function logAuditEvent(params: {
@@ -185,7 +202,7 @@ export async function logAuditEvent(params: {
       userName: params.userName,
       targetUserId: params.targetUserId ? new mongoose.Types.ObjectId(params.targetUserId) : undefined,
       targetUserName: params.targetUserName,
-      details: params.details || {},
+      details: params.details ? sanitizeAuditDetails(params.details) : {},
       ipAddress: params.ipAddress,
       timestamp: new Date(),
     });

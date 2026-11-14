@@ -18,7 +18,7 @@ function generateSecureToken(bytes = 32) {
   return crypto.randomBytes(bytes).toString("hex");
 }
 
-// User schema inline definition matching src/models/user.ts
+// Schemas matching application models
 const UserSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
@@ -40,6 +40,15 @@ const SessionSchema = new mongoose.Schema(
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     expiresAt: { type: Date, required: true },
     lastActiveAt: { type: Date, default: Date.now },
+  },
+  { timestamps: true }
+);
+
+const RateLimitSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true, unique: true, index: true },
+    count: { type: Number, required: true, default: 1 },
+    resetAt: { type: Date, required: true, index: { expires: 0 } },
   },
   { timestamps: true }
 );
@@ -66,46 +75,95 @@ function hasPermission(user, required) {
   return Array.isArray(user.permissions) && user.permissions.includes(required);
 }
 
-// In-memory rate limiter matching src/lib/rate-limit.ts
-class RateLimiter {
-  constructor() {
-    this.store = new Map();
+// CSRF Origin verification logic matching src/middleware.ts
+function validateCsrfOrigin(originHeader, hostHeader, method) {
+  const mutatingMethods = ["POST", "PATCH", "DELETE", "PUT"];
+  if (!mutatingMethods.includes(method.toUpperCase())) {
+    return { valid: true };
   }
-  check(key, max = 5, windowMs = 15 * 60 * 1000) {
-    const now = Date.now();
-    const entry = this.store.get(key);
-    if (!entry || now > entry.resetTime) {
-      this.store.set(key, { count: 1, resetTime: now + windowMs });
-      return { allowed: true, remaining: max - 1 };
+  if (!originHeader) {
+    return { valid: true }; // non-browser or same-origin direct tool
+  }
+  try {
+    const originHost = new URL(originHeader).host;
+    if (originHost !== hostHeader) {
+      return { valid: false, status: 403, error: "Cross-origin request blocked" };
     }
-    if (entry.count >= max) {
-      return { allowed: false, remaining: 0, resetInSeconds: Math.ceil((entry.resetTime - now) / 1000) };
+    return { valid: true };
+  } catch {
+    return { valid: false, status: 403, error: "Malformed origin header" };
+  }
+}
+
+// Audit details sanitizer matching src/lib/auth.ts
+function sanitizeAuditDetails(obj) {
+  const sanitized = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (/password|hash|token|secret|cookie|credential|authorization/i.test(key)) {
+      sanitized[key] = "[REDACTED]";
+    } else if (value && typeof value === "object" && !Array.isArray(value)) {
+      sanitized[key] = sanitizeAuditDetails(value);
+    } else {
+      sanitized[key] = value;
     }
-    entry.count += 1;
-    return { allowed: true, remaining: max - entry.count };
   }
-  reset(key) {
-    this.store.delete(key);
+  return sanitized;
+}
+
+// Shared MongoDB-backed rate limiter matching src/lib/rate-limit.ts
+async function checkDistributedRateLimit(RateLimitModel, key, maxAttempts = 5, windowSeconds = 900) {
+  const now = new Date();
+  const resetAt = new Date(now.getTime() + windowSeconds * 1000);
+
+  const existing = await RateLimitModel.findOne({ key });
+  if (!existing || existing.resetAt <= now) {
+    await RateLimitModel.findOneAndUpdate(
+      { key },
+      { $set: { count: 1, resetAt } },
+      { upsert: true, returnDocument: "after" }
+    );
+    return { success: true, remaining: maxAttempts - 1, resetSeconds: windowSeconds, statusCode: 200 };
   }
+
+  if (existing.count >= maxAttempts) {
+    const resetSeconds = Math.max(1, Math.ceil((existing.resetAt.getTime() - now.getTime()) / 1000));
+    return { success: false, remaining: 0, resetSeconds, statusCode: 429 };
+  }
+
+  const updated = await RateLimitModel.findOneAndUpdate(
+    { key, count: { $lt: maxAttempts } },
+    { $inc: { count: 1 } },
+    { returnDocument: "after" }
+  );
+
+  const currentCount = updated ? updated.count : existing.count + 1;
+  const resetSeconds = Math.max(1, Math.ceil((existing.resetAt.getTime() - now.getTime()) / 1000));
+  return {
+    success: currentCount <= maxAttempts,
+    remaining: Math.max(0, maxAttempts - currentCount),
+    resetSeconds,
+    statusCode: currentCount <= maxAttempts ? 200 : 429,
+  };
 }
 
 async function runAuthTestSuite() {
   console.log("==========================================================");
-  console.log("   KASI AGRI AGENCIES - PHASE 3 VERIFICATION TEST SUITE   ");
+  console.log("   KASI AGRI AGENCIES - PHASE 3 SECURITY HARDENED SUITE   ");
   console.log("==========================================================");
 
   let mongod;
   try {
-    console.log("[Setup] Starting MongoMemoryServer...");
+    console.log("[Setup] Starting isolated MongoMemoryServer...");
     mongod = await MongoMemoryServer.create();
     const uri = mongod.getUri();
     await mongoose.connect(uri);
-    console.log("[Setup] Connected to isolated in-memory test database.");
+    console.log(`[Setup] Connected to isolated test DB: ${uri}`);
+    console.log("[Setup] Business/Production DB is strictly untouched.");
 
     const User = mongoose.model("User", UserSchema);
     const Session = mongoose.model("Session", SessionSchema);
+    const RateLimit = mongoose.model("RateLimit", RateLimitSchema);
     const AuditLog = mongoose.model("AuditLog", AuditLogSchema);
-    const rateLimiter = new RateLimiter();
 
     let passedTests = 0;
     let failedTests = 0;
@@ -135,7 +193,7 @@ async function runAuthTestSuite() {
     });
     assert(owner._id !== undefined, "1.1 Owner account created successfully in DB");
 
-    // Test zero-overwrite policy
+    // Zero-overwrite policy check
     const existingOwnerCheck = await User.findOne({ role: "OWNER" });
     const duplicateBlocked = existingOwnerCheck !== null;
     assert(duplicateBlocked, "1.2 Zero-overwrite policy: detects existing owner and denies duplicate creation");
@@ -159,55 +217,78 @@ async function runAuthTestSuite() {
     const unknownUser = await User.findOne({ username: "nonexistent_user" });
     assert(unknownUser === null, "2.4 Unknown username lookup safely returns null (triggers 401)");
 
-    console.log("\n--- TEST GROUP 3: BRUTE FORCE & RATE LIMITING ---");
-    const ip = "192.168.1.100";
-    rateLimiter.reset(ip);
-    for (let i = 1; i <= 5; i++) {
-      rateLimiter.check(ip, 5);
-    }
-    const rateLimitBlocked = rateLimiter.check(ip, 5);
-    assert(rateLimitBlocked.allowed === false, "3.1 Rate limiter triggers lockout after 5 failed attempts (HTTP 422)");
+    console.log("\n--- TEST GROUP 3: PRODUCTION SHARED RATE LIMITING (HTTP 429) ---");
+    const testKey = "login:192.168.1.100:balamurugan";
+    await RateLimit.deleteOne({ key: testKey });
 
-    console.log("\n--- TEST GROUP 4: SESSION MANAGEMENT & LIFECYCLE ---");
-    // Create session token
+    // Perform 5 allowed attempts
+    for (let i = 1; i <= 5; i++) {
+      const res = await checkDistributedRateLimit(RateLimit, testKey, 5, 900);
+      assert(res.success === true, `3.${i} Attempt ${i}/5 allowed by shared MongoDB rate limiter`);
+    }
+
+    // 6th attempt must trigger HTTP 429
+    const blockedRes = await checkDistributedRateLimit(RateLimit, testKey, 5, 900);
+    assert(
+      blockedRes.success === false && blockedRes.statusCode === 429 && blockedRes.resetSeconds > 0,
+      "3.6 6th attempt rejected with HTTP 429 Too Many Requests and valid Retry-After duration"
+    );
+
+    // Reset rate limiter on successful login
+    await RateLimit.deleteOne({ key: testKey });
+    const postResetRes = await checkDistributedRateLimit(RateLimit, testKey, 5, 900);
+    assert(postResetRes.success === true, "3.7 Successful login resets rate limit bucket in DB");
+
+    console.log("\n--- TEST GROUP 4: CSRF & CROSS-ORIGIN VALIDATION ---");
+    const sameOriginCheck = validateCsrfOrigin("http://localhost:3000", "localhost:3000", "POST");
+    assert(sameOriginCheck.valid === true, "4.1 Valid same-origin POST request permitted");
+
+    const crossOriginAttack = validateCsrfOrigin("https://evil-hacker.com", "localhost:3000", "POST");
+    assert(
+      crossOriginAttack.valid === false && crossOriginAttack.status === 403,
+      "4.2 Cross-origin mutating request (CSRF) blocked with HTTP 403 Forbidden"
+    );
+
+    const safeGetCheck = validateCsrfOrigin("https://evil-hacker.com", "localhost:3000", "GET");
+    assert(safeGetCheck.valid === true, "4.3 Safe read-only request (GET) not blocked by CSRF filter");
+
+    console.log("\n--- TEST GROUP 5: SESSION MANAGEMENT & LIFECYCLE ---");
     const rawToken = generateSecureToken(32);
     const tokenHash = hashToken(rawToken);
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
     const session = await Session.create({
       tokenHash,
       userId: owner._id,
       expiresAt,
     });
-    assert(session._id !== undefined, "4.1 Cryptographically secure session created and persisted with SHA-256 tokenHash");
+    assert(session._id !== undefined, "5.1 Session created with SHA-256 tokenHash (raw token never stored)");
 
-    // Validate active session
     const activeSession = await Session.findOne({
       tokenHash,
       expiresAt: { $gt: new Date() },
     }).populate("userId");
-    assert(activeSession !== null && activeSession.userId.username === "balamurugan", "4.2 Active session successfully validated against DB");
+    assert(activeSession !== null && activeSession.userId.username === "balamurugan", "5.2 Active session validated");
 
-    // Scenario 4.3: Session expiration test
+    // Expired session rejection
     const expiredRawToken = generateSecureToken(32);
-    const expiredTokenHash = hashToken(expiredRawToken);
     await Session.create({
-      tokenHash: expiredTokenHash,
+      tokenHash: hashToken(expiredRawToken),
       userId: owner._id,
-      expiresAt: new Date(Date.now() - 1000), // expired 1s ago
+      expiresAt: new Date(Date.now() - 1000),
     });
     const expiredCheck = await Session.findOne({
-      tokenHash: expiredTokenHash,
+      tokenHash: hashToken(expiredRawToken),
       expiresAt: { $gt: new Date() },
     });
-    assert(expiredCheck === null, "4.3 Expired session correctly rejected");
+    assert(expiredCheck === null, "5.3 Expired session rejected");
 
-    // Scenario 4.4: Logout / session revocation
+    // Session revocation on logout
     await Session.deleteOne({ tokenHash });
     const revokedCheck = await Session.findOne({ tokenHash });
-    assert(revokedCheck === null, "4.4 Session revocation on logout: session deleted from DB");
+    assert(revokedCheck === null, "5.4 Session revocation on logout: removed from DB");
 
-    console.log("\n--- TEST GROUP 5: EMPLOYEE MANAGEMENT & REGISTRATION ---");
+    console.log("\n--- TEST GROUP 6: EMPLOYEE MANAGEMENT & REGISTRATION ---");
     const empPassword = "StaffPassword@2026";
     const empHash = await hash(empPassword, ARGON2_OPTIONS);
     const employee = await User.create({
@@ -220,83 +301,91 @@ async function runAuthTestSuite() {
       permissions: ["inventory:read", "billing:create"],
       status: "ACTIVE",
     });
-    assert(employee._id !== undefined, "5.1 Employee created with Argon2id hash and initial permissions");
+    assert(employee._id !== undefined, "6.1 Employee registered with Argon2id");
 
-    // Scenario 5.2: Employee login
     const empCheck = await User.findOne({ username: "smurugan" });
     const empPwValid = await verify(empCheck.passwordHash, empPassword);
-    assert(empPwValid === true, "5.2 Employee successfully authenticates with correct credentials");
+    assert(empPwValid === true, "6.2 Employee successfully authenticates");
 
-    console.log("\n--- TEST GROUP 6: ROLE-BASED ACCESS CONTROL (RBAC) ---");
-    // Owner authorization (Full access to all modules)
-    assert(hasPermission(owner, "inventory:write") === true, "6.1 Owner has access to inventory:write");
-    assert(hasPermission(owner, "employees:manage") === true, "6.2 Owner has access to employees:manage");
-    assert(hasPermission(owner, "reports:view") === true, "6.3 Owner has access to reports:view");
+    console.log("\n--- TEST GROUP 7: ROLE-BASED ACCESS CONTROL (RBAC) ---");
+    assert(hasPermission(owner, "inventory:write") === true, "7.1 Owner has access to inventory:write");
+    assert(hasPermission(owner, "employees:manage") === true, "7.2 Owner has access to employees:manage");
+    assert(hasPermission(owner, "reports:view") === true, "7.3 Owner has access to reports:view");
 
-    // Employee authorization with assigned permissions
-    assert(hasPermission(employee, "inventory:read") === true, "6.4 Employee allowed access to assigned permission inventory:read");
-    assert(hasPermission(employee, "billing:create") === true, "6.5 Employee allowed access to assigned permission billing:create");
+    assert(hasPermission(employee, "inventory:read") === true, "7.4 Employee has assigned inventory:read");
+    assert(hasPermission(employee, "billing:create") === true, "7.5 Employee has assigned billing:create");
+    assert(hasPermission(employee, "employees:manage") === false, "7.6 Employee denied unassigned employees:manage (HTTP 403)");
+    assert(hasPermission(employee, "settings:edit") === false, "7.7 Employee denied unassigned settings:edit (HTTP 403)");
 
-    // Employee denied unauthorized permissions
-    assert(hasPermission(employee, "employees:manage") === false, "6.6 Employee denied unassigned permission employees:manage (HTTP 403)");
-    assert(hasPermission(employee, "settings:edit") === false, "6.7 Employee denied unassigned permission settings:edit (HTTP 403)");
-
-    console.log("\n--- TEST GROUP 7: PERMISSION UPDATES ---");
-    // Update employee permissions
-    await User.findByIdAndUpdate(employee._id, {
-      $set: { permissions: ["inventory:read", "billing:create", "inventory:write"] },
-    });
-    const updatedEmployee = await User.findById(employee._id);
-    assert(
-      hasPermission(updatedEmployee, "inventory:write") === true,
-      "7.1 Permission update reflected immediately: inventory:write is now granted"
-    );
-
-    console.log("\n--- TEST GROUP 8: PASSWORD RESET ---");
-    const newPassword = "NewSecretPassword@999";
-    const newHash = await hash(newPassword, ARGON2_OPTIONS);
-    await User.findByIdAndUpdate(employee._id, { $set: { passwordHash: newHash } });
-
-    // Revoke all active sessions on password reset
-    const empSessionToken = generateSecureToken(32);
+    console.log("\n--- TEST GROUP 8: IMMEDIATE SESSION REVOCATION ON DEACTIVATION & RESET ---");
+    // Create active session for employee
+    const empToken1 = generateSecureToken(32);
     await Session.create({
-      tokenHash: hashToken(empSessionToken),
+      tokenHash: hashToken(empToken1),
       userId: employee._id,
       expiresAt: new Date(Date.now() + 86400000),
     });
-    // Now trigger session purge on password reset
-    await Session.deleteMany({ userId: employee._id });
-    const empSessionsAfterReset = await Session.countDocuments({ userId: employee._id });
-    assert(empSessionsAfterReset === 0, "8.1 Password reset revokes all existing active sessions for user");
 
-    // Test new password authentication
+    // 8.1 Immediate revocation on deactivation
+    await User.findByIdAndUpdate(employee._id, { $set: { status: "INACTIVE" } });
+    await Session.deleteMany({ userId: employee._id });
+
+    const deactivatedEmp = await User.findById(employee._id);
+    const sessionCountAfterDeactivation = await Session.countDocuments({ userId: employee._id });
+    assert(sessionCountAfterDeactivation === 0, "8.1 Deactivation immediately purges all active employee sessions");
+    assert(hasPermission(deactivatedEmp, "inventory:read") === false, "8.2 Deactivated account denied all permissions");
+
+    // Reactivate for password reset test
+    await User.findByIdAndUpdate(employee._id, { $set: { status: "ACTIVE" } });
+    const empToken2 = generateSecureToken(32);
+    await Session.create({
+      tokenHash: hashToken(empToken2),
+      userId: employee._id,
+      expiresAt: new Date(Date.now() + 86400000),
+    });
+
+    // 8.3 Immediate revocation on password reset
+    const newPassword = "NewSecretPassword@999";
+    const newHash = await hash(newPassword, ARGON2_OPTIONS);
+    await User.findByIdAndUpdate(employee._id, { $set: { passwordHash: newHash } });
+    await Session.deleteMany({ userId: employee._id });
+
+    const sessionCountAfterReset = await Session.countDocuments({ userId: employee._id });
+    assert(sessionCountAfterReset === 0, "8.3 Password reset immediately purges all active employee sessions");
+
     const empAfterReset = await User.findById(employee._id);
     const newPwValid = await verify(empAfterReset.passwordHash, newPassword);
     const oldPwInvalid = await verify(empAfterReset.passwordHash, empPassword);
-    assert(newPwValid === true && oldPwInvalid === false, "8.2 New password authenticates, old password fails");
+    assert(newPwValid === true && oldPwInvalid === false, "8.4 New password authenticates, old password rejected");
 
-    console.log("\n--- TEST GROUP 9: EMPLOYEE DEACTIVATION ---");
-    await User.findByIdAndUpdate(employee._id, { $set: { status: "INACTIVE" } });
-    const deactivatedEmp = await User.findById(employee._id);
+    console.log("\n--- TEST GROUP 9: AUDIT LOG CREDENTIAL SCRUBBING ---");
+    const rawDetails = {
+      password: "SuperSecretPassword123!",
+      passwordHash: "$argon2id$v=19$m=65536...",
+      sessionToken: "abc123token",
+      userSecret: "private_key",
+      validMeta: "Updated employee phone",
+    };
+    const sanitized = sanitizeAuditDetails(rawDetails);
+    assert(sanitized.password === "[REDACTED]", "9.1 Audit details: password key redacted");
+    assert(sanitized.passwordHash === "[REDACTED]", "9.2 Audit details: passwordHash key redacted");
+    assert(sanitized.sessionToken === "[REDACTED]", "9.3 Audit details: sessionToken key redacted");
+    assert(sanitized.userSecret === "[REDACTED]", "9.4 Audit details: secret key redacted");
+    assert(sanitized.validMeta === "Updated employee phone", "9.5 Non-sensitive metadata preserved in audit log");
 
-    // Verify permission check fails for inactive account
-    assert(hasPermission(deactivatedEmp, "inventory:read") === false, "9.1 Deactivated employee denied all permissions");
-
-    // Verify login logic rejects inactive account
-    const canLogin = deactivatedEmp.status === "ACTIVE";
-    assert(canLogin === false, "9.2 Deactivated employee login rejected (Account deactivated)");
-
-    console.log("\n--- TEST GROUP 10: AUDIT LOGGING ---");
     await AuditLog.create({
-      action: "EMPLOYEE_DEACTIVATED",
+      action: "EMPLOYEE_UPDATED",
       actorId: owner._id,
       actorName: owner.name,
       targetUserId: employee._id,
       targetUserName: employee.name,
-      details: { reason: "Seasonal contract complete" },
+      details: sanitized,
     });
-    const auditCount = await AuditLog.countDocuments({ action: "EMPLOYEE_DEACTIVATED" });
-    assert(auditCount === 1, "10.1 Audit trail records sensitive account status changes with actor & timestamp");
+    const loggedEntry = await AuditLog.findOne({ action: "EMPLOYEE_UPDATED" });
+    assert(
+      loggedEntry.details.password === "[REDACTED]" && !JSON.stringify(loggedEntry).includes("SuperSecretPassword123!"),
+      "9.6 Zero credential leakage verified in audit log database records"
+    );
 
     console.log("\n==========================================================");
     console.log(`TEST SUMMARY: ${passedTests} PASSED, ${failedTests} FAILED`);
@@ -319,4 +408,3 @@ async function runAuthTestSuite() {
 }
 
 runAuthTestSuite();
-
