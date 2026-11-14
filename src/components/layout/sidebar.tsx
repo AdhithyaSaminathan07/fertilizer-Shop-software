@@ -18,6 +18,7 @@ import {
   Sprout,
   ShieldCheck,
   Building2,
+  UserCheck,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -63,6 +64,13 @@ export const NAV_ITEMS: NavItem[] = [
     icon: BookOpenText,
     badge: "Due Alert",
     badgeVariant: "warning",
+  },
+  {
+    title: "Employee Staff",
+    href: "/employees",
+    icon: UserCheck,
+    badge: "RBAC",
+    badgeVariant: "agri",
   },
   {
     title: "Reports & GST",
@@ -235,4 +243,3 @@ export function Sidebar({ collapsed, onToggleCollapse, className }: SidebarProps
     </motion.aside>
   );
 }
-

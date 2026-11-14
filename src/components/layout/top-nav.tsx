@@ -1,21 +1,23 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import {
   Menu,
   Search,
   Bell,
   Plus,
   HelpCircle,
-  Activity,
   User,
   Settings,
   LogOut,
   Calendar,
+  Shield,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dropdown } from "@/components/ui/dropdown";
+import type { SafeUser } from "@/types/auth";
 
 interface TopNavProps {
   onOpenMobileDrawer: () => void;
@@ -26,9 +28,10 @@ interface TopNavProps {
 export function TopNav({
   onOpenMobileDrawer,
   onOpenQuickBillModal,
-  className,
 }: TopNavProps) {
+  const router = useRouter();
   const [dbStatus, setDbStatus] = React.useState<"healthy" | "connecting" | "offline">("healthy");
+  const [currentUser, setCurrentUser] = React.useState<SafeUser | null>(null);
 
   React.useEffect(() => {
     // Check real health check endpoint from Phase 1
@@ -44,14 +47,40 @@ export function TopNav({
       .catch(() => {
         setDbStatus("offline");
       });
+
+    // Check current authenticated user session
+    fetch("/api/auth/me")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.success && data?.data?.user) {
+          setCurrentUser(data.data.user);
+        }
+      })
+      .catch(() => {});
   }, []);
+
+  const handleLogout = async () => {
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+      router.push("/login");
+      router.refresh();
+    } catch {
+      router.push("/login");
+    }
+  };
 
   const userMenuItems = [
     {
       id: "profile",
-      label: "Proprietor Profile",
+      label: currentUser?.role === "OWNER" ? "Proprietor Profile" : "Employee Profile",
       icon: <User className="h-4 w-4" />,
-      onClick: () => {},
+      onClick: () => router.push("/employees"),
+    },
+    {
+      id: "employees",
+      label: "Employee Staff & RBAC",
+      icon: <Shield className="h-4 w-4" />,
+      onClick: () => router.push("/employees"),
     },
     {
       id: "settings",
@@ -61,7 +90,7 @@ export function TopNav({
     },
     {
       id: "help",
-      label: "Documentation & Support",
+      label: "Support & Help",
       icon: <HelpCircle className="h-4 w-4" />,
       onClick: () => {},
     },
@@ -71,7 +100,7 @@ export function TopNav({
       label: "Sign Out",
       icon: <LogOut className="h-4 w-4" />,
       destructive: true,
-      onClick: () => {},
+      onClick: handleLogout,
     },
   ];
 
@@ -96,6 +125,15 @@ export function TopNav({
     },
   ];
 
+  const initials = currentUser?.name
+    ? currentUser.name
+        .split(" ")
+        .map((n) => n[0])
+        .join("")
+        .toUpperCase()
+        .slice(0, 2)
+    : "RB";
+
   return (
     <header className="sticky top-0 z-20 flex h-16 w-full items-center justify-between border-b border-slate-200/90 bg-white/95 px-4 backdrop-blur-md sm:px-6">
       {/* Left: Mobile trigger & Search */}
@@ -110,7 +148,7 @@ export function TopNav({
           <Menu className="h-5 w-5" />
         </button>
 
-        {/* Global Search Bar (Linear/Stripe style) */}
+        {/* Global Search Bar */}
         <div className="relative hidden sm:block w-64 md:w-80">
           <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400">
             <Search className="h-4 w-4" />
@@ -173,19 +211,22 @@ export function TopNav({
           items={notificationItems}
         />
 
-        {/* Proprietor User Menu */}
+        {/* User Profile Menu */}
         <Dropdown
           trigger={
             <div className="flex items-center gap-2.5 pl-1.5 cursor-pointer">
               <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gradient-to-tr from-[#176B3A] to-[#2E9D59] text-xs font-bold text-white shadow-xs">
-                RB
+                {initials}
               </div>
               <div className="hidden lg:flex flex-col text-left">
                 <span className="text-xs font-semibold text-slate-800 leading-tight">
-                  R. Balamurugan
+                  {currentUser?.name || "R. Balamurugan"}
                 </span>
-                <span className="text-[10px] text-slate-500 leading-tight">
-                  Proprietor
+                <span className="text-[10px] text-slate-500 leading-tight flex items-center gap-1">
+                  <span>{currentUser?.role === "OWNER" ? "Proprietor" : "Staff"}</span>
+                  {currentUser?.role === "OWNER" && (
+                    <span className="text-emerald-700 font-bold">• Owner</span>
+                  )}
                 </span>
               </div>
             </div>
@@ -196,4 +237,3 @@ export function TopNav({
     </header>
   );
 }
-

@@ -7,6 +7,8 @@
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint .",
+    "seed:owner": "node scripts/bootstrap-owner.mjs",
+    "test:auth": "node scripts/test-auth-suite.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -29,6 +31,7 @@
     "@types/react-dom": "^19.0.4",
     "eslint": "^9.21.0",
     "eslint-config-next": "^16.4.6",
+    "mongodb-memory-server": "^11.3.0",
     "postcss": "^8.5.3",
     "puppeteer-core": "^25.17.0",
     "tailwindcss": "^4.3.5",

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePathname } from "next/navigation";
 import { Sidebar } from "./sidebar";
 import { TopNav } from "./top-nav";
 import { MobileDrawer } from "./mobile-drawer";
@@ -15,9 +16,15 @@ interface AppShellProps {
 }
 
 export function AppShell({ children }: AppShellProps) {
+  const pathname = usePathname();
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = React.useState(false);
   const [quickBillOpen, setQuickBillOpen] = React.useState(false);
+
+  // If on login page, render clean standalone view without app chrome
+  if (pathname === "/login") {
+    return <>{children}</>;
+  }
 
   return (
     <div className="flex min-h-screen bg-[#F7F9F6] text-slate-900 font-sans antialiased">
@@ -82,7 +89,7 @@ export function AppShell({ children }: AppShellProps) {
           <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-800 border border-amber-200/60 flex items-start gap-2">
             <AlertCircle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
             <div>
-              <span className="font-semibold">Phase 2 Design Prototype:</span> Full inventory item selection, tax calculations, and database persistence will be connected in Phase 3.
+              <span className="font-semibold">Phase 2 Design Prototype:</span> Full inventory item selection, tax calculations, and database persistence will be connected in Phase 4.
             </div>
           </div>
 
@@ -126,4 +133,3 @@ export function AppShell({ children }: AppShellProps) {
     </div>
   );
 }
-
