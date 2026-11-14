@@ -5,9 +5,9 @@ import fs from "fs";
 import path from "path";
 import readline from "readline";
 
-// Safely parse .env.local or .env without external dependencies
+// Safely parse .env (or .env.local fallback) without external dependencies
 function loadEnv() {
-  const envFiles = [".env.local", ".env"];
+  const envFiles = [".env", ".env.local"];
   for (const file of envFiles) {
     const envPath = path.resolve(process.cwd(), file);
     if (fs.existsSync(envPath)) {
