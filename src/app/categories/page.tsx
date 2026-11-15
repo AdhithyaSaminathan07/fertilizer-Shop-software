@@ -204,12 +204,13 @@ export default function CategoriesPage() {
             Organize fertilizers, pesticides, seeds, organic manure and agricultural equipment.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
           <Button
             variant="outline"
             size="sm"
             onClick={() => setRefreshIndex((p) => p + 1)}
             disabled={loading}
+            className="min-h-[40px] sm:min-h-[36px] flex-1 sm:flex-initial"
           >
             <RefreshCw className={`w-4 h-4 mr-1 ${loading ? "animate-spin" : ""}`} />
             Refresh
@@ -217,7 +218,7 @@ export default function CategoriesPage() {
           <Button
             size="sm"
             onClick={handleOpenAdd}
-            className="bg-[#176B3A] hover:bg-[#12542D] text-white"
+            className="bg-[#176B3A] hover:bg-[#12542D] text-white min-h-[40px] sm:min-h-[36px] flex-1 sm:flex-initial"
           >
             <Plus className="w-4 h-4 mr-1.5" />
             Add Category

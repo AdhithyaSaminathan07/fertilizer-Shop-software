@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import crypto from "crypto";
 import { connectDB } from "@/lib/db";
 import { Product } from "@/models/product";
 import { Category } from "@/models/category";
@@ -191,12 +192,27 @@ export async function createProduct(
     throw new Error(`Category "${category.name}" is inactive. Activate it or choose another category.`);
   }
 
-  // Validate unique SKU (case-insensitive)
-  const existingSku = await Product.findOne({
-    sku: { $regex: `^${data.sku.trim()}$`, $options: "i" },
-  });
-  if (existingSku) {
-    throw new Error(`A product with SKU "${data.sku}" already exists.`);
+  // Handle SKU: optional manual input or collision-proof auto-generation
+  let finalSku = data.sku ? data.sku.trim().toUpperCase() : "";
+  if (!finalSku) {
+    let collision = true;
+    while (collision) {
+      const timePart = Date.now().toString(36).toUpperCase();
+      const randHex = crypto.randomBytes(3).toString("hex").toUpperCase();
+      finalSku = `KASI-PRD-${timePart}-${randHex}`;
+      const existing = await Product.findOne({ sku: finalSku });
+      if (!existing) {
+        collision = false;
+      }
+    }
+  } else {
+    // Validate unique SKU (case-insensitive)
+    const existingSku = await Product.findOne({
+      sku: { $regex: `^${finalSku}$`, $options: "i" },
+    });
+    if (existingSku) {
+      throw new Error(`A product with SKU "${finalSku}" already exists.`);
+    }
   }
 
   // Validate unique barcode if provided
@@ -210,7 +226,7 @@ export async function createProduct(
   // Phase 4 safety: stock quantities begin at 0 until Purchase module integration
   const product = await Product.create({
     name: data.name.trim(),
-    sku: data.sku.trim().toUpperCase(),
+    sku: finalSku,
     barcode: data.barcode?.trim() || undefined,
     brand: data.brand.trim(),
     categoryId: new mongoose.Types.ObjectId(data.categoryId),
@@ -260,16 +276,17 @@ export async function updateProduct(
     throw new Error("Product not found");
   }
 
-  // If SKU is being updated, verify uniqueness
-  if (data.sku && data.sku.trim().toUpperCase() !== product.sku) {
+  // If SKU is being updated with a non-empty string, verify uniqueness (never overwrite with empty)
+  if (data.sku && data.sku.trim() !== "" && data.sku.trim().toUpperCase() !== product.sku) {
+    const candidateSku = data.sku.trim().toUpperCase();
     const existingSku = await Product.findOne({
       _id: { $ne: id },
-      sku: { $regex: `^${data.sku.trim()}$`, $options: "i" },
+      sku: { $regex: `^${candidateSku}$`, $options: "i" },
     });
     if (existingSku) {
-      throw new Error(`Another product with SKU "${data.sku}" already exists.`);
+      throw new Error(`Another product with SKU "${candidateSku}" already exists.`);
     }
-    product.sku = data.sku.trim().toUpperCase();
+    product.sku = candidateSku;
   }
 
   // If barcode is being updated, verify uniqueness

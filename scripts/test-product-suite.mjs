@@ -1,5 +1,6 @@
 import { MongoMemoryServer } from "mongodb-memory-server";
 import mongoose from "mongoose";
+import crypto from "crypto";
 import { z } from "zod";
 
 // Units & Conversion functions matching src/lib/units.ts
@@ -43,6 +44,19 @@ function calculateMargin(purchasePrice, sellingPrice) {
 }
 
 // Zod validation matching src/validations/product.ts
+const createProductSchema = z
+  .object({
+    name: z.string().min(2).max(150).trim(),
+    sku: z.string().max(50).trim().toUpperCase().optional().or(z.literal("")),
+    barcode: z.string().max(50).trim().optional().or(z.literal("")),
+    brand: z.string().min(2).max(100).trim(),
+    categoryId: z.string(),
+    purchasePrice: z.number().min(0),
+    sellingPrice: z.number().min(0),
+    primaryUnit: z.string(),
+    status: z.enum(["ACTIVE", "INACTIVE", "ARCHIVED"]).default("ACTIVE"),
+  });
+
 const createBatchSchema = z
   .object({
     batchNumber: z.string().min(1).max(50),
@@ -261,6 +275,55 @@ async function runProductCategoryTestSuite() {
     // 2.6 Standard positive profit margin calculation
     const { margin: posMargin, marginPercent: posPercent } = calculateMargin(242.0, 266.5);
     assert(posMargin === 24.5 && posPercent > 10, "2.6 Standard positive profit margin accurately calculated");
+
+    // 2.7 SKU is optional in createProductSchema
+    const parseWithoutSku = createProductSchema.safeParse({
+      name: "Organic Neem Oil",
+      brand: "KASI Agri",
+      categoryId: catFertilizers._id.toString(),
+      purchasePrice: 150,
+      sellingPrice: 190,
+      primaryUnit: "BOTTLES",
+    });
+    assert(parseWithoutSku.success === true, "2.7 Product schema validation succeeds when SKU is omitted / left blank");
+
+    // 2.8 Collision-proof auto-generated SKU algorithm
+    function generateAutoSku(brand) {
+      const brandPrefix = (brand.trim() || "KASI").slice(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, "K");
+      const timePart = Date.now().toString(36).toUpperCase();
+      const randHex = crypto.randomBytes(3).toString("hex").toUpperCase();
+      return `KASI-${brandPrefix}-${timePart}-${randHex}`;
+    }
+    const autoSku1 = generateAutoSku("KASI Agri");
+    const autoSku2 = generateAutoSku("KASI Agri");
+    assert(
+      autoSku1.startsWith("KASI-") && autoSku1 !== autoSku2,
+      "2.8 Collision-proof SKU generator produces unique identifiers with KASI- prefix"
+    );
+
+    // 2.9 Product creation with auto-generated SKU persists in MongoDB
+    const autoSkuProduct = await Product.create({
+      name: "Organic Neem Oil 1L",
+      sku: autoSku1,
+      brand: "KASI Agri",
+      categoryId: catFertilizers._id,
+      purchasePrice: 150,
+      sellingPrice: 190,
+      primaryUnit: "BOTTLES",
+      status: "ACTIVE",
+      currentStock: 0,
+    });
+    assert(
+      autoSkuProduct._id !== undefined && autoSkuProduct.sku === autoSku1,
+      "2.9 Product created with auto-generated SKU safely stored in database"
+    );
+
+    // 2.10 Product status defaults to ACTIVE and supports ACTIVE, INACTIVE, ARCHIVED
+    assert(
+      autoSkuProduct.status === "ACTIVE" &&
+      ["ACTIVE", "INACTIVE", "ARCHIVED"].includes(autoSkuProduct.status),
+      "2.10 Product Status defaults to ACTIVE and adheres to permitted enum states"
+    );
 
     console.log("\n--- TEST GROUP 3: UNIT CONVERSIONS & DIMENSIONAL COMPATIBILITY ---");
     // 3.1 Dimensionally compatible conversions (Correction 3)

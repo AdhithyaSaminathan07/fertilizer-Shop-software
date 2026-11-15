@@ -90,18 +90,19 @@ export default function ProductsPage() {
             Fertilizers, seeds, agrochemicals, pesticides, and tools with configurable unit conversions.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
           <Button
             variant="outline"
             size="sm"
             onClick={() => setRefreshIndex((p) => p + 1)}
             disabled={loading}
+            className="min-h-[40px] sm:min-h-[36px] flex-1 sm:flex-initial"
           >
             <RefreshCw className={`w-4 h-4 mr-1 ${loading ? "animate-spin" : ""}`} />
             Refresh
           </Button>
-          <Link href="/products/new">
-            <Button size="sm" className="bg-[#176B3A] hover:bg-[#12542D] text-white">
+          <Link href="/products/new" className="flex-1 sm:flex-initial">
+            <Button size="sm" className="bg-[#176B3A] hover:bg-[#12542D] text-white w-full min-h-[40px] sm:min-h-[36px]">
               <Plus className="w-4 h-4 mr-1.5" />
               Add New Product
             </Button>

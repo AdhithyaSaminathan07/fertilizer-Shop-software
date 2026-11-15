@@ -55,7 +55,7 @@ export default function ProductDetailPage() {
   const [editSellPrice, setEditSellPrice] = useState("0");
   const [editPrimaryUnit, setEditPrimaryUnit] = useState<ProductUnit>("BAGS");
   const [editMinThreshold, setEditMinThreshold] = useState("10");
-  const [editStatus, setEditStatus] = useState<"ACTIVE" | "INACTIVE">("ACTIVE");
+  const [editStatus, setEditStatus] = useState<"ACTIVE" | "INACTIVE" | "ARCHIVED">("ACTIVE");
 
   // Conversion fields
   const [editConvEnabled, setEditConvEnabled] = useState(false);
@@ -103,7 +103,7 @@ export default function ProductDetailPage() {
     setEditSellPrice(String(product.sellingPrice));
     setEditPrimaryUnit(product.primaryUnit);
     setEditMinThreshold(String(product.minStockThreshold));
-    setEditStatus(product.status === "ARCHIVED" ? "INACTIVE" : product.status);
+    setEditStatus(product.status);
 
     if (product.unitConversion?.enabled) {
       setEditConvEnabled(true);
@@ -253,8 +253,8 @@ export default function ProductDetailPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleOpenEdit}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={handleOpenEdit} className="min-h-[40px] sm:min-h-[36px] flex-1 sm:flex-initial">
             <Edit3 className="w-4 h-4 mr-1.5" />
             Edit Product
           </Button>
@@ -262,7 +262,7 @@ export default function ProductDetailPage() {
             variant="ghost"
             size="sm"
             onClick={() => setIsArchiveOpen(true)}
-            className="text-rose-600 hover:bg-rose-50"
+            className="text-rose-600 hover:bg-rose-50 min-h-[40px] sm:min-h-[36px] flex-1 sm:flex-initial"
           >
             <Archive className="w-4 h-4 mr-1.5" />
             Archive
@@ -638,14 +638,15 @@ export default function ProductDetailPage() {
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs font-semibold text-slate-700">Status</label>
+            <label className="text-xs font-semibold text-slate-700">Product Status</label>
             <select
               value={editStatus}
-              onChange={(e) => setEditStatus(e.target.value as "ACTIVE" | "INACTIVE")}
-              className="w-full text-sm border border-slate-300 rounded-md px-2.5 h-9 bg-white"
+              onChange={(e) => setEditStatus(e.target.value as "ACTIVE" | "INACTIVE" | "ARCHIVED")}
+              className="w-full text-sm border border-slate-300 rounded-md px-2.5 h-10 bg-white"
             >
-              <option value="ACTIVE">Active</option>
-              <option value="INACTIVE">Inactive</option>
+              <option value="ACTIVE">Active (Available for operations)</option>
+              <option value="INACTIVE">Inactive (Temporarily unavailable)</option>
+              <option value="ARCHIVED">Archived (Retired / Discontinued)</option>
             </select>
           </div>
         </div>

@@ -32,10 +32,11 @@ export const createProductSchema = z
       .trim(),
     sku: z
       .string()
-      .min(2, "SKU must be at least 2 characters")
       .max(50, "SKU cannot exceed 50 characters")
       .trim()
-      .toUpperCase(),
+      .toUpperCase()
+      .optional()
+      .or(z.literal("")),
     barcode: z
       .string()
       .max(50, "Barcode cannot exceed 50 characters")
@@ -61,7 +62,7 @@ export const createProductSchema = z
     primaryUnit: UNIT_ENUM,
     unitConversion: unitConversionSchema,
     minStockThreshold: z.number().min(0, "Minimum stock threshold cannot be negative").default(10),
-    status: z.enum(["ACTIVE", "INACTIVE"]).default("ACTIVE"),
+    status: z.enum(["ACTIVE", "INACTIVE", "ARCHIVED"]).default("ACTIVE"),
   })
   .refine(
     (data) => {
@@ -91,11 +92,11 @@ export const updateProductSchema = z
       .optional(),
     sku: z
       .string()
-      .min(2, "SKU must be at least 2 characters")
       .max(50, "SKU cannot exceed 50 characters")
       .trim()
       .toUpperCase()
-      .optional(),
+      .optional()
+      .or(z.literal("")),
     barcode: z
       .string()
       .max(50, "Barcode cannot exceed 50 characters")
