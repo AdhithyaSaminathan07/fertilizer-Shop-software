@@ -9,7 +9,6 @@ import { generateSecureToken, hashToken } from "@/lib/security";
 import type { SafeUser, Permission, AuditAction } from "@/types/auth";
 
 export const SESSION_COOKIE_NAME = "kasi_session";
-export const SESSION_COOKIE_ALIAS = "kasi_session_token";
 export const SESSION_DURATION_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 /**
@@ -74,6 +73,7 @@ export async function validateSessionToken(rawToken: string): Promise<SafeUser |
   });
 
   if (!session) {
+    console.log("[Auth/validateSession] No active session found matching cookie hash (expired or invalid).");
     return null;
   }
 
@@ -81,6 +81,7 @@ export async function validateSessionToken(rawToken: string): Promise<SafeUser |
 
   // If user does not exist or has been deactivated, immediately revoke the session
   if (!user || user.status !== "ACTIVE") {
+    console.log(`[Auth/validateSession] User account status is ${user?.status || "NOT_FOUND"}. Revoking session.`);
     await Session.deleteOne({ _id: session._id });
     return null;
   }
@@ -108,7 +109,7 @@ export async function destroyAllUserSessions(userId: string): Promise<void> {
 
 /**
  * Retrieves the currently authenticated user from request cookies or Next.js headers store.
- * Supports both `kasi_session` and `kasi_session_token` cookie names and Bearer authorization.
+ * Uses the canonical HttpOnly 'kasi_session' cookie.
  * Safe for use in Server Components and API Route Handlers.
  */
 export async function getCurrentUser(req?: NextRequest): Promise<SafeUser | null> {
@@ -117,73 +118,88 @@ export async function getCurrentUser(req?: NextRequest): Promise<SafeUser | null
 
     // 1. Direct inspection from NextRequest if available
     if (req) {
-      rawToken =
-        req.cookies.get(SESSION_COOKIE_NAME)?.value ||
-        req.cookies.get(SESSION_COOKIE_ALIAS)?.value;
-
-      if (!rawToken) {
-        const authHeader = req.headers.get("authorization");
-        if (authHeader && authHeader.startsWith("Bearer ")) {
-          rawToken = authHeader.slice(7).trim();
-        }
-      }
+      rawToken = req.cookies.get(SESSION_COOKIE_NAME)?.value;
     }
 
     // 2. Next.js asynchronous cookieStore fallback
     if (!rawToken) {
-      const cookieStore = await cookies();
-      const tokenCookie =
-        cookieStore.get(SESSION_COOKIE_NAME) ||
-        cookieStore.get(SESSION_COOKIE_ALIAS);
-      rawToken = tokenCookie?.value;
+      try {
+        const cookieStore = await cookies();
+        rawToken = cookieStore.get(SESSION_COOKIE_NAME)?.value;
+      } catch {
+        // Fallback context
+      }
     }
 
     if (!rawToken || rawToken.trim() === "") {
+      console.log(`[Auth/getCurrentUser] No '${SESSION_COOKIE_NAME}' cookie present on request.`);
       return null;
     }
 
     return await validateSessionToken(rawToken);
-  } catch {
+  } catch (err) {
+    console.error("[Auth/getCurrentUser] Error validating user session:", err instanceof Error ? err.message : err);
     return null;
   }
 }
 
 /**
- * Sets the secure session cookie on the outgoing response.
- * Sets both standard `kasi_session` and `kasi_session_token` for seamless compatibility.
+ * Sets the secure session cookie.
+ * Supports both directly attaching to NextResponse and setting via Next.js cookieStore.
  */
-export async function setSessionCookie(rawToken: string, expiresAt: Date): Promise<void> {
-  const cookieStore = await cookies();
+export async function setSessionCookie(
+  rawToken: string,
+  expiresAt: Date,
+  res?: import("next/server").NextResponse
+): Promise<void> {
   const isProd = process.env.NODE_ENV === "production";
   const cookieOptions = {
     httpOnly: true,
-    secure: isProd && process.env.COOKIE_SECURE !== "false",
+    secure: process.env.COOKIE_SECURE === "true" || (isProd && process.env.COOKIE_SECURE !== "false"),
     sameSite: "lax" as const,
     path: "/",
     expires: expiresAt,
   };
 
-  cookieStore.set(SESSION_COOKIE_NAME, rawToken, cookieOptions);
-  cookieStore.set(SESSION_COOKIE_ALIAS, rawToken, cookieOptions);
+  // Attach directly to the NextResponse object when provided (guaranteed to be in response headers)
+  if (res) {
+    res.cookies.set(SESSION_COOKIE_NAME, rawToken, cookieOptions);
+  }
+
+  // Also set on Next.js cookieStore for Server Component / Action compatibility
+  try {
+    const cookieStore = await cookies();
+    cookieStore.set(SESSION_COOKIE_NAME, rawToken, cookieOptions);
+  } catch {
+    // Non-request context
+  }
 }
 
 /**
- * Clears the session cookies on the outgoing response.
+ * Clears the session cookie on logout.
+ * Supports both directly attaching to NextResponse and setting via Next.js cookieStore.
  */
-export async function clearSessionCookie(): Promise<void> {
-  const cookieStore = await cookies();
+export async function clearSessionCookie(res?: import("next/server").NextResponse): Promise<void> {
   const isProd = process.env.NODE_ENV === "production";
   const clearOptions = {
     httpOnly: true,
-    secure: isProd && process.env.COOKIE_SECURE !== "false",
+    secure: process.env.COOKIE_SECURE === "true" || (isProd && process.env.COOKIE_SECURE !== "false"),
     sameSite: "lax" as const,
     path: "/",
     maxAge: 0,
     expires: new Date(0),
   };
 
-  cookieStore.set(SESSION_COOKIE_NAME, "", clearOptions);
-  cookieStore.set(SESSION_COOKIE_ALIAS, "", clearOptions);
+  if (res) {
+    res.cookies.set(SESSION_COOKIE_NAME, "", clearOptions);
+  }
+
+  try {
+    const cookieStore = await cookies();
+    cookieStore.set(SESSION_COOKIE_NAME, "", clearOptions);
+  } catch {
+    // Non-request context
+  }
 }
 
 /**

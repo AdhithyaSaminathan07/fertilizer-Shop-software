@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 export const SESSION_COOKIE_NAME = "kasi_session";
-export const SESSION_COOKIE_ALIAS = "kasi_session_token";
 
 // Public routes that do not require authentication
 const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/health"];
@@ -52,12 +51,7 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const authHeader = request.headers.get("authorization");
-  const bearerToken = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
-  const sessionCookie =
-    request.cookies.get(SESSION_COOKIE_NAME)?.value ||
-    request.cookies.get(SESSION_COOKIE_ALIAS)?.value ||
-    bearerToken;
+  const sessionCookie = request.cookies.get(SESSION_COOKIE_NAME)?.value;
 
   // If user is already authenticated and visits /login, redirect to dashboard
   if (pathname === "/login") {
@@ -71,6 +65,7 @@ export function middleware(request: NextRequest) {
   if (!sessionCookie) {
     // Return 401 for API routes
     if (pathname.startsWith("/api/")) {
+      console.log(`[Auth/Middleware] 401 Blocked unauthenticated API call: ${method} ${pathname} (missing '${SESSION_COOKIE_NAME}' cookie)`);
       return NextResponse.json(
         {
           success: false,

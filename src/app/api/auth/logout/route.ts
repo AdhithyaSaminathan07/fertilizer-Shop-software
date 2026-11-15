@@ -5,15 +5,15 @@ import { successResponse } from "@/lib/api-response";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const ipAddress = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "127.0.0.1";
-  const user = await getCurrentUser();
-  const cookieStore = await cookies();
-  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
+  const user = await getCurrentUser(request);
+  const token = request.cookies.get(SESSION_COOKIE_NAME)?.value || (await cookies()).get(SESSION_COOKIE_NAME)?.value;
 
   if (token) {
     await destroySession(token);
   }
 
-  await clearSessionCookie();
+  const response = successResponse({ message: "Logged out successfully" });
+  await clearSessionCookie(response);
 
   if (user) {
     await logAuditEvent({
@@ -24,6 +24,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     });
   }
 
-  return successResponse({ message: "Logged out successfully" });
+  console.log(`[Auth/Logout] Session revoked and cookie '${SESSION_COOKIE_NAME}' cleared.`);
+  return response;
 }
 

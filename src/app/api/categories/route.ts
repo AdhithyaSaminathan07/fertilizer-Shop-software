@@ -8,9 +8,11 @@ import { listCategories, createCategory } from "@/services/category.service";
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const currentUser = await getCurrentUser(request);
   if (!currentUser) {
+    console.log("[Auth/Categories] GET 401 Unauthorized: no valid session found");
     return errorResponse("Authentication required", HTTP_STATUS.UNAUTHORIZED);
   }
   if (!hasPermission(currentUser, "inventory:read")) {
+    console.log(`[Auth/Categories] GET 403 Forbidden: user '${currentUser.username}' lacks 'inventory:read'`);
     return errorResponse("Forbidden: You lack permission to view categories", HTTP_STATUS.FORBIDDEN);
   }
 
@@ -29,9 +31,11 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 export async function POST(request: NextRequest): Promise<NextResponse> {
   const currentUser = await getCurrentUser(request);
   if (!currentUser) {
+    console.log("[Auth/Categories] POST 401 Unauthorized: no valid session found");
     return errorResponse("Authentication required", HTTP_STATUS.UNAUTHORIZED);
   }
   if (!hasPermission(currentUser, "inventory:write")) {
+    console.log(`[Auth/Categories] POST 403 Forbidden: user '${currentUser.username}' lacks 'inventory:write'`);
     return errorResponse("Forbidden: You lack permission to create categories", HTTP_STATUS.FORBIDDEN);
   }
 

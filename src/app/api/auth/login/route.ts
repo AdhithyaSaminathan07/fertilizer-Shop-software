@@ -3,7 +3,13 @@ import { connectDB } from "@/lib/db";
 import { User } from "@/models/user";
 import { verifyPassword } from "@/lib/security";
 import { checkRateLimit, resetRateLimit } from "@/lib/rate-limit";
-import { createSession, setSessionCookie, logAuditEvent, toSafeUser } from "@/lib/auth";
+import {
+  createSession,
+  setSessionCookie,
+  logAuditEvent,
+  toSafeUser,
+  SESSION_COOKIE_NAME,
+} from "@/lib/auth";
 import { loginSchema } from "@/validations/auth";
 import { errorResponse, successResponse } from "@/lib/api-response";
 import { HTTP_STATUS } from "@/constants/http-status";
@@ -105,8 +111,6 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     userAgent,
   });
 
-  await setSessionCookie(rawToken, expiresAt);
-
   // Log successful login in audit log
   await logAuditEvent({
     action: "LOGIN_SUCCESS",
@@ -117,6 +121,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   });
 
   const safeUser = toSafeUser(user);
-  return successResponse({ user: safeUser, message: "Authentication successful" });
+  const response = successResponse({ user: safeUser, message: "Authentication successful" });
+
+  // Attach session cookie directly to the outgoing response headers and Next.js store
+  await setSessionCookie(rawToken, expiresAt, response);
+  console.log(`[Auth/Login] User '${user.username}' (${user.role}) authenticated. Session cookie '${SESSION_COOKIE_NAME}' attached.`);
+
+  return response;
 }
 
