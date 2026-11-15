@@ -109,12 +109,12 @@ export function Sidebar({ collapsed, onToggleCollapse, className }: SidebarProps
       animate={{ width: collapsed ? 80 : 280 }}
       transition={{ duration: 0.2, ease: "easeInOut" }}
       className={cn(
-        "relative hidden lg:flex flex-col border-r border-slate-200/90 bg-white select-none z-30 shrink-0",
+        "fixed inset-y-0 left-0 z-30 hidden lg:flex flex-col h-screen h-[100dvh] border-r border-slate-200/90 bg-white select-none shrink-0 overflow-hidden shadow-xs",
         className
       )}
     >
       {/* Brand Header */}
-      <div className="flex h-16 items-center px-4 border-b border-slate-100 justify-between">
+      <div className="flex h-16 shrink-0 items-center px-4 border-b border-slate-100 justify-between">
         <Link
           href="/"
           className="flex items-center gap-3 overflow-hidden text-left focus-visible:outline-none"
@@ -164,7 +164,7 @@ export function Sidebar({ collapsed, onToggleCollapse, className }: SidebarProps
       </AnimatePresence>
 
       {/* Navigation Items */}
-      <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1">
+      <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1 overscroll-contain">
         <div className={cn("px-3 pb-2 text-[11px] font-semibold tracking-wider uppercase text-slate-400", collapsed && "text-center")}>
           {collapsed ? "•••" : "Menu"}
         </div>
@@ -221,7 +221,7 @@ export function Sidebar({ collapsed, onToggleCollapse, className }: SidebarProps
       </div>
 
       {/* Footer / Collapse Toggle */}
-      <div className="border-t border-slate-100 p-3 bg-white">
+      <div className="shrink-0 border-t border-slate-100 p-3 bg-white">
         {!collapsed && (
           <div className="mb-3 rounded-lg bg-emerald-50/60 p-2.5 text-[11px] text-emerald-900 border border-emerald-100/60">
             <div className="flex items-center gap-1.5 font-semibold text-[#176B3A]">

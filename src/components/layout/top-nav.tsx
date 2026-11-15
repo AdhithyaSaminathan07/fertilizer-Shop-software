@@ -135,7 +135,7 @@ export function TopNav({
     : "RB";
 
   return (
-    <header className="sticky top-0 z-20 flex h-16 w-full items-center justify-between border-b border-slate-200/90 bg-white/95 px-4 backdrop-blur-md sm:px-6">
+    <header className="sticky top-0 z-20 flex h-16 w-full shrink-0 items-center justify-between border-b border-slate-200/90 bg-white/95 px-4 backdrop-blur-md sm:px-6">
       {/* Left: Mobile trigger & Search */}
       <div className="flex items-center gap-3">
         {/* Mobile menu button */}

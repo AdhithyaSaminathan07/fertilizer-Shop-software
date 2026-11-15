@@ -13,8 +13,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className="min-h-screen antialiased bg-[#F7F9F6] text-slate-900">
+    <html lang="en" className="h-full antialiased">
+      <body className="h-full antialiased bg-[#F7F9F6] text-slate-900 overflow-hidden select-auto">
         <AppShell>{children}</AppShell>
       </body>
     </html>

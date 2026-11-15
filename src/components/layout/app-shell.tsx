@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Receipt, AlertCircle } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 interface AppShellProps {
   children: React.ReactNode;
@@ -23,12 +24,12 @@ export function AppShell({ children }: AppShellProps) {
 
   // If on login page, render clean standalone view without app chrome
   if (pathname === "/login") {
-    return <>{children}</>;
+    return <div className="h-full h-[100dvh] overflow-y-auto">{children}</div>;
   }
 
   return (
-    <div className="flex min-h-screen bg-[#F7F9F6] text-slate-900 font-sans antialiased">
-      {/* Desktop Collapsible Sidebar */}
+    <div className="relative flex h-screen h-[100dvh] w-full overflow-hidden bg-[#F7F9F6] text-slate-900 font-sans antialiased">
+      {/* Desktop Fixed Sidebar */}
       <Sidebar
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
@@ -40,16 +41,21 @@ export function AppShell({ children }: AppShellProps) {
         onClose={() => setMobileDrawerOpen(false)}
       />
 
-      {/* Main Content Area */}
-      <div className="flex flex-1 flex-col min-w-0 overflow-hidden">
-        {/* Top Navigation */}
+      {/* Main Content Area with responsive desktop offset */}
+      <div
+        className={cn(
+          "flex flex-1 flex-col h-full h-[100dvh] min-w-0 overflow-hidden transition-[padding-left] duration-200 ease-in-out",
+          sidebarCollapsed ? "lg:pl-20" : "lg:pl-[280px]"
+        )}
+      >
+        {/* Top Navigation - fixed at top */}
         <TopNav
           onOpenMobileDrawer={() => setMobileDrawerOpen(true)}
           onOpenQuickBillModal={() => setQuickBillOpen(true)}
         />
 
-        {/* Page Content Container */}
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
+        {/* Page Content Container - scrolls independently */}
+        <main className="flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-8 overscroll-contain">
           <div className="mx-auto max-w-7xl">{children}</div>
         </main>
       </div>
