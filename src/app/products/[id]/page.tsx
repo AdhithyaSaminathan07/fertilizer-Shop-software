@@ -69,8 +69,8 @@ export default function ProductDetailPage() {
   useEffect(() => {
     let isMounted = true;
     Promise.all([
-      fetch(`/api/products/${productId}`).then((r) => r.json()),
-      fetch("/api/categories").then((r) => r.json()),
+      fetch(`/api/products/${productId}`, { credentials: "same-origin" }).then((r) => r.json()),
+      fetch("/api/categories", { credentials: "same-origin" }).then((r) => r.json()),
     ])
       .then(([prodData, catData]) => {
         if (!isMounted) return;
@@ -164,6 +164,7 @@ export default function ProductDetailPage() {
         const res = await fetch(`/api/products/${product._id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
           body: JSON.stringify(payload),
         });
 
@@ -188,6 +189,7 @@ export default function ProductDetailPage() {
       try {
         const res = await fetch(`/api/products/${product._id}`, {
           method: "DELETE",
+          credentials: "same-origin",
         });
         const data = await res.json();
         if (!res.ok || !data.success) {

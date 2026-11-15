@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 export const SESSION_COOKIE_NAME = "kasi_session";
+export const SESSION_COOKIE_ALIAS = "kasi_session_token";
 
 // Public routes that do not require authentication
 const PUBLIC_PATHS = ["/login", "/api/auth/login", "/api/health"];
@@ -51,7 +52,12 @@ export function middleware(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const sessionCookie = request.cookies.get(SESSION_COOKIE_NAME)?.value;
+  const authHeader = request.headers.get("authorization");
+  const bearerToken = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : null;
+  const sessionCookie =
+    request.cookies.get(SESSION_COOKIE_NAME)?.value ||
+    request.cookies.get(SESSION_COOKIE_ALIAS)?.value ||
+    bearerToken;
 
   // If user is already authenticated and visits /login, redirect to dashboard
   if (pathname === "/login") {

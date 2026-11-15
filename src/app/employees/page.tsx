@@ -76,7 +76,7 @@ export default function EmployeesPage() {
   const [refreshIndex, setRefreshIndex] = React.useState(0);
 
   React.useEffect(() => {
-    fetch("/api/employees")
+    fetch("/api/employees", { credentials: "same-origin" })
       .then((res) => res.json())
       .then((data) => {
         if (data?.success && data?.data?.employees) {
@@ -116,7 +116,9 @@ export default function EmployeesPage() {
     setActivityModalOpen(true);
     setLoadingActivity(true);
     try {
-      const res = await fetch(`/api/employees/${emp.id}/activity`);
+      const res = await fetch(`/api/employees/${emp.id}/activity`, {
+        credentials: "same-origin",
+      });
       const data = await res.json();
       if (data.success && data.data?.logs) {
         setActivityLogs(data.data.logs);
@@ -148,6 +150,7 @@ export default function EmployeesPage() {
     try {
       const res = await fetch("/api/employees", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: newName,
@@ -192,6 +195,7 @@ export default function EmployeesPage() {
     try {
       const res = await fetch(`/api/employees/${selectedEmployee.id}`, {
         method: "PATCH",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: editName,
@@ -226,6 +230,7 @@ export default function EmployeesPage() {
     try {
       const res = await fetch(`/api/employees/${selectedEmployee.id}/reset-password`, {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ newPassword: resetPassword }),
       });
@@ -251,6 +256,7 @@ export default function EmployeesPage() {
     try {
       const res = await fetch(`/api/employees/${emp.id}`, {
         method: "PATCH",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: nextStatus }),
       });

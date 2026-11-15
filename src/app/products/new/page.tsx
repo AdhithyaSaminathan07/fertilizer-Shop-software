@@ -55,7 +55,7 @@ export default function NewProductPage() {
   const loadCategories = useCallback(async (showRefreshingState = false) => {
     if (showRefreshingState) setIsRefreshingCats(true);
     try {
-      const res = await fetch("/api/categories");
+      const res = await fetch("/api/categories", { credentials: "same-origin" });
       const data = await res.json();
       if (data.success && data.data?.categories) {
         const activeCats = data.data.categories.filter((c: ICategory) => c.status === "ACTIVE");
@@ -78,7 +78,7 @@ export default function NewProductPage() {
   // Initial load & window focus listener for automatic refresh when returning from category creation
   useEffect(() => {
     let isMounted = true;
-    fetch("/api/categories")
+    fetch("/api/categories", { credentials: "same-origin" })
       .then((res) => res.json())
       .then((data) => {
         if (isMounted) {
@@ -100,7 +100,7 @@ export default function NewProductPage() {
       });
 
     const handleWindowFocus = () => {
-      fetch("/api/categories")
+      fetch("/api/categories", { credentials: "same-origin" })
         .then((res) => res.json())
         .then((data) => {
           if (isMounted && data.success && data.data?.categories) {
@@ -211,6 +211,7 @@ export default function NewProductPage() {
         const res = await fetch("/api/products", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
           body: JSON.stringify(payload),
         });
 

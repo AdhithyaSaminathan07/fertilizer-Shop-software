@@ -1,4 +1,5 @@
 import { cookies } from "next/headers";
+import type { NextRequest } from "next/server";
 import mongoose from "mongoose";
 import { connectDB } from "@/lib/db";
 import { User, type IUser } from "@/models/user";
@@ -8,6 +9,7 @@ import { generateSecureToken, hashToken } from "@/lib/security";
 import type { SafeUser, Permission, AuditAction } from "@/types/auth";
 
 export const SESSION_COOKIE_NAME = "kasi_session";
+export const SESSION_COOKIE_ALIAS = "kasi_session_token";
 export const SESSION_DURATION_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
 /**
@@ -105,17 +107,42 @@ export async function destroyAllUserSessions(userId: string): Promise<void> {
 }
 
 /**
- * Retrieves the currently authenticated user from incoming request cookies.
+ * Retrieves the currently authenticated user from request cookies or Next.js headers store.
+ * Supports both `kasi_session` and `kasi_session_token` cookie names and Bearer authorization.
  * Safe for use in Server Components and API Route Handlers.
  */
-export async function getCurrentUser(): Promise<SafeUser | null> {
+export async function getCurrentUser(req?: NextRequest): Promise<SafeUser | null> {
   try {
-    const cookieStore = await cookies();
-    const tokenCookie = cookieStore.get(SESSION_COOKIE_NAME);
-    if (!tokenCookie?.value) {
+    let rawToken: string | undefined;
+
+    // 1. Direct inspection from NextRequest if available
+    if (req) {
+      rawToken =
+        req.cookies.get(SESSION_COOKIE_NAME)?.value ||
+        req.cookies.get(SESSION_COOKIE_ALIAS)?.value;
+
+      if (!rawToken) {
+        const authHeader = req.headers.get("authorization");
+        if (authHeader && authHeader.startsWith("Bearer ")) {
+          rawToken = authHeader.slice(7).trim();
+        }
+      }
+    }
+
+    // 2. Next.js asynchronous cookieStore fallback
+    if (!rawToken) {
+      const cookieStore = await cookies();
+      const tokenCookie =
+        cookieStore.get(SESSION_COOKIE_NAME) ||
+        cookieStore.get(SESSION_COOKIE_ALIAS);
+      rawToken = tokenCookie?.value;
+    }
+
+    if (!rawToken || rawToken.trim() === "") {
       return null;
     }
-    return await validateSessionToken(tokenCookie.value);
+
+    return await validateSessionToken(rawToken);
   } catch {
     return null;
   }
@@ -123,31 +150,40 @@ export async function getCurrentUser(): Promise<SafeUser | null> {
 
 /**
  * Sets the secure session cookie on the outgoing response.
+ * Sets both standard `kasi_session` and `kasi_session_token` for seamless compatibility.
  */
 export async function setSessionCookie(rawToken: string, expiresAt: Date): Promise<void> {
   const cookieStore = await cookies();
-  cookieStore.set(SESSION_COOKIE_NAME, rawToken, {
+  const isProd = process.env.NODE_ENV === "production";
+  const cookieOptions = {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    secure: isProd && process.env.COOKIE_SECURE !== "false",
+    sameSite: "lax" as const,
     path: "/",
     expires: expiresAt,
-  });
+  };
+
+  cookieStore.set(SESSION_COOKIE_NAME, rawToken, cookieOptions);
+  cookieStore.set(SESSION_COOKIE_ALIAS, rawToken, cookieOptions);
 }
 
 /**
- * Clears the session cookie on the outgoing response.
+ * Clears the session cookies on the outgoing response.
  */
 export async function clearSessionCookie(): Promise<void> {
   const cookieStore = await cookies();
-  cookieStore.set(SESSION_COOKIE_NAME, "", {
+  const isProd = process.env.NODE_ENV === "production";
+  const clearOptions = {
     httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
+    secure: isProd && process.env.COOKIE_SECURE !== "false",
+    sameSite: "lax" as const,
     path: "/",
     maxAge: 0,
     expires: new Date(0),
-  });
+  };
+
+  cookieStore.set(SESSION_COOKIE_NAME, "", clearOptions);
+  cookieStore.set(SESSION_COOKIE_ALIAS, "", clearOptions);
 }
 
 /**

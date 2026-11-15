@@ -47,7 +47,9 @@ export default function CategoriesPage() {
   // Load categories
   useEffect(() => {
     let isMounted = true;
-    fetch(`/api/categories${search ? `?search=${encodeURIComponent(search)}` : ""}`)
+    fetch(`/api/categories${search ? `?search=${encodeURIComponent(search)}` : ""}`, {
+      credentials: "same-origin",
+    })
       .then((res) => res.json())
       .then((data) => {
         if (isMounted) {
@@ -100,6 +102,7 @@ export default function CategoriesPage() {
         const res = await fetch("/api/categories", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
           body: JSON.stringify({
             name: formName.trim(),
             description: formDesc.trim() || undefined,
@@ -132,6 +135,7 @@ export default function CategoriesPage() {
         const res = await fetch(`/api/categories/${selectedCategory._id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
           body: JSON.stringify({
             name: formName.trim(),
             description: formDesc.trim() || undefined,
@@ -158,6 +162,7 @@ export default function CategoriesPage() {
         await fetch(`/api/categories/${cat._id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
           body: JSON.stringify({ status: nextStatus }),
         });
         setRefreshIndex((prev) => prev + 1);
@@ -174,6 +179,7 @@ export default function CategoriesPage() {
       try {
         const res = await fetch(`/api/categories/${selectedCategory._id}`, {
           method: "DELETE",
+          credentials: "same-origin",
         });
         const data = await res.json();
         if (!res.ok || !data.success) {

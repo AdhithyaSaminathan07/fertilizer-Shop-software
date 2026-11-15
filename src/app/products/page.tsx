@@ -36,7 +36,7 @@ export default function ProductsPage() {
 
   // Load categories for filter dropdown
   useEffect(() => {
-    fetch("/api/categories")
+    fetch("/api/categories", { credentials: "same-origin" })
       .then((res) => res.json())
       .then((data) => {
         if (data.success && data.data?.categories) {
@@ -54,7 +54,7 @@ export default function ProductsPage() {
     if (selectedCategory !== "ALL") params.set("categoryId", selectedCategory);
     if (stockFilter !== "ALL") params.set("stockStatus", stockFilter);
 
-    fetch(`/api/products?${params.toString()}`)
+    fetch(`/api/products?${params.toString()}`, { credentials: "same-origin" })
       .then((res) => res.json())
       .then((data) => {
         if (isMounted) {

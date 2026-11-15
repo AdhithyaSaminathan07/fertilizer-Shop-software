@@ -6,7 +6,7 @@ import { createProductSchema } from "@/validations/product";
 import { listProducts, createProduct } from "@/services/product.service";
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
-  const currentUser = await getCurrentUser();
+  const currentUser = await getCurrentUser(request);
   if (!currentUser) {
     return errorResponse("Authentication required", HTTP_STATUS.UNAUTHORIZED);
   }
@@ -40,7 +40,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 }
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
-  const currentUser = await getCurrentUser();
+  const currentUser = await getCurrentUser(request);
   if (!currentUser) {
     return errorResponse("Authentication required", HTTP_STATUS.UNAUTHORIZED);
   }

@@ -35,7 +35,7 @@ export function TopNav({
 
   React.useEffect(() => {
     // Check real health check endpoint from Phase 1
-    fetch("/api/health")
+    fetch("/api/health", { credentials: "same-origin" })
       .then((res) => res.json())
       .then((data) => {
         if (data?.success && data?.data?.status === "healthy") {
@@ -49,7 +49,7 @@ export function TopNav({
       });
 
     // Check current authenticated user session
-    fetch("/api/auth/me")
+    fetch("/api/auth/me", { credentials: "same-origin" })
       .then((res) => res.json())
       .then((data) => {
         if (data?.success && data?.data?.user) {
@@ -61,7 +61,10 @@ export function TopNav({
 
   const handleLogout = async () => {
     try {
-      await fetch("/api/auth/logout", { method: "POST" });
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "same-origin",
+      });
       router.push("/login");
       router.refresh();
     } catch {

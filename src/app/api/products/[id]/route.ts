@@ -10,11 +10,11 @@ interface RouteParams {
 }
 
 export async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: RouteParams
 ): Promise<NextResponse> {
   const { id } = await params;
-  const currentUser = await getCurrentUser();
+  const currentUser = await getCurrentUser(request);
   if (!currentUser) {
     return errorResponse("Authentication required", HTTP_STATUS.UNAUTHORIZED);
   }
@@ -35,7 +35,7 @@ export async function PATCH(
   { params }: RouteParams
 ): Promise<NextResponse> {
   const { id } = await params;
-  const currentUser = await getCurrentUser();
+  const currentUser = await getCurrentUser(request);
   if (!currentUser) {
     return errorResponse("Authentication required", HTTP_STATUS.UNAUTHORIZED);
   }
@@ -75,7 +75,7 @@ export async function DELETE(
   { params }: RouteParams
 ): Promise<NextResponse> {
   const { id } = await params;
-  const currentUser = await getCurrentUser();
+  const currentUser = await getCurrentUser(request);
   if (!currentUser) {
     return errorResponse("Authentication required", HTTP_STATUS.UNAUTHORIZED);
   }

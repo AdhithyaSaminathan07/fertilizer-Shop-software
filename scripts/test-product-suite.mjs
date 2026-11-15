@@ -43,6 +43,32 @@ function calculateMargin(purchasePrice, sellingPrice) {
   return { margin, marginPercent };
 }
 
+function hashToken(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+// Schemas matching application models
+const UserSchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true },
+    email: { type: String, required: true, unique: true },
+    username: { type: String, required: true, unique: true },
+    role: { type: String, enum: ["OWNER", "EMPLOYEE"], default: "EMPLOYEE" },
+    permissions: [{ type: String }],
+    status: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE" },
+  },
+  { timestamps: true }
+);
+
+const SessionSchema = new mongoose.Schema(
+  {
+    tokenHash: { type: String, required: true, unique: true },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    expiresAt: { type: Date, required: true },
+  },
+  { timestamps: true }
+);
+
 // Zod validation matching src/validations/product.ts
 const createProductSchema = z
   .object({
@@ -429,6 +455,198 @@ async function runProductCategoryTestSuite() {
 
     assert(hasPermission(inventoryManager, "inventory:write") === true, "6.7 Inventory manager granted inventory:write");
     assert(hasPermission(inventoryManager, "inventory:delete") === true, "6.8 Inventory manager granted inventory:delete");
+
+    console.log("\n--- TEST GROUP 7: CATEGORY API AUTHENTICATION & RBAC (401 vs 403 vs 201) ---");
+    const User = mongoose.model("User", UserSchema);
+    const Session = mongoose.model("Session", SessionSchema);
+
+    // Simulate Category POST route handler behavior matching src/app/api/categories/route.ts
+    async function simulateCategoryPostRoute(req) {
+      // 1. Extract token from kasi_session or kasi_session_token or Authorization
+      const rawToken =
+        req.cookies?.["kasi_session"] ||
+        req.cookies?.["kasi_session_token"] ||
+        (req.headers?.authorization?.startsWith("Bearer ") ? req.headers.authorization.slice(7) : null);
+
+      if (!rawToken) {
+        return { status: 401, error: "Authentication required" };
+      }
+
+      const tokenHash = hashToken(rawToken);
+      const session = await Session.findOne({ tokenHash, expiresAt: { $gt: new Date() } });
+      if (!session) {
+        return { status: 401, error: "Authentication required (invalid/expired session)" };
+      }
+
+      const user = await User.findById(session.userId);
+      if (!user || user.status !== "ACTIVE") {
+        if (session) await Session.deleteOne({ _id: session._id });
+        return { status: 401, error: "Authentication required (user inactive/not found)" };
+      }
+
+      // 2. RBAC check
+      if (!hasPermission(user, "inventory:write")) {
+        return { status: 403, error: "Forbidden: You lack permission to create categories" };
+      }
+
+      // 3. Category creation logic
+      if (!req.body?.name) {
+        return { status: 400, error: "Name is required" };
+      }
+
+      const newCat = await Category.create({
+        name: req.body.name,
+        slug: req.body.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+        description: req.body.description || "",
+        status: "ACTIVE",
+      });
+
+      return { status: 201, category: newCat };
+    }
+
+    // Create test users
+    const ownerDoc = await User.create({
+      name: "R. Balamurugan",
+      email: "owner@kasiagri.in",
+      username: "balamurugan",
+      role: "OWNER",
+      status: "ACTIVE",
+      permissions: [],
+    });
+
+    const unauthorizedEmpDoc = await User.create({
+      name: "Staff ReadOnly",
+      email: "readonly@kasiagri.in",
+      username: "readonly",
+      role: "EMPLOYEE",
+      status: "ACTIVE",
+      permissions: ["inventory:read"],
+    });
+
+    const authorizedEmpDoc = await User.create({
+      name: "Staff Manager",
+      email: "manager@kasiagri.in",
+      username: "manager",
+      role: "EMPLOYEE",
+      status: "ACTIVE",
+      permissions: ["inventory:read", "inventory:write"],
+    });
+
+    const inactiveOwnerDoc = await User.create({
+      name: "Deactivated Staff",
+      email: "deactivated@kasiagri.in",
+      username: "deactivated",
+      role: "EMPLOYEE",
+      status: "INACTIVE",
+      permissions: ["inventory:write"],
+    });
+
+    // Create sessions
+    const ownerToken1 = "token-owner-primary";
+    await Session.create({
+      tokenHash: hashToken(ownerToken1),
+      userId: ownerDoc._id,
+      expiresAt: new Date(Date.now() + 7 * 86400 * 1000),
+    });
+
+    const ownerToken2 = "token-owner-alias";
+    await Session.create({
+      tokenHash: hashToken(ownerToken2),
+      userId: ownerDoc._id,
+      expiresAt: new Date(Date.now() + 7 * 86400 * 1000),
+    });
+
+    const unauthEmpToken = "token-unauth-emp";
+    await Session.create({
+      tokenHash: hashToken(unauthEmpToken),
+      userId: unauthorizedEmpDoc._id,
+      expiresAt: new Date(Date.now() + 7 * 86400 * 1000),
+    });
+
+    const authEmpToken = "token-auth-emp";
+    await Session.create({
+      tokenHash: hashToken(authEmpToken),
+      userId: authorizedEmpDoc._id,
+      expiresAt: new Date(Date.now() + 7 * 86400 * 1000),
+    });
+
+    const expiredToken = "token-expired";
+    await Session.create({
+      tokenHash: hashToken(expiredToken),
+      userId: ownerDoc._id,
+      expiresAt: new Date(Date.now() - 1000), // expired
+    });
+
+    const inactiveToken = "token-inactive-user";
+    await Session.create({
+      tokenHash: hashToken(inactiveToken),
+      userId: inactiveOwnerDoc._id,
+      expiresAt: new Date(Date.now() + 7 * 86400 * 1000),
+    });
+
+    // 7.1 Unauthenticated request (no cookie/token)
+    const resNoAuth = await simulateCategoryPostRoute({ cookies: {}, body: { name: "Bio Fertilizers" } });
+    assert(resNoAuth.status === 401, "7.1 Unauthenticated request returns HTTP 401 Unauthorized");
+
+    // 7.2 Logged-in OWNER with standard `kasi_session` cookie
+    const resOwnerStandard = await simulateCategoryPostRoute({
+      cookies: { kasi_session: ownerToken1 },
+      body: { name: "Bio Fertilizers", description: "Organic & bacterial fertilizers" },
+    });
+    assert(
+      resOwnerStandard.status === 201 && resOwnerStandard.category?._id !== undefined,
+      "7.2 Logged-in OWNER creates category via kasi_session cookie (HTTP 201)"
+    );
+
+    // 7.3 Logged-in OWNER with dual-compatibility `kasi_session_token` cookie
+    const resOwnerAlias = await simulateCategoryPostRoute({
+      cookies: { kasi_session_token: ownerToken2 },
+      body: { name: "Organic Pesticides", description: "Neem and botanical extract pesticides" },
+    });
+    assert(
+      resOwnerAlias.status === 201 && resOwnerAlias.category?._id !== undefined,
+      "7.3 Logged-in OWNER creates category via kasi_session_token alias (HTTP 201)"
+    );
+
+    // 7.4 Authenticated employee WITHOUT inventory:write permission
+    const resNoWritePerm = await simulateCategoryPostRoute({
+      cookies: { kasi_session: unauthEmpToken },
+      body: { name: "Agricultural Accessories" },
+    });
+    assert(
+      resNoWritePerm.status === 403,
+      "7.4 Authenticated employee without inventory:write receives HTTP 403 Forbidden"
+    );
+
+    // 7.5 Authenticated employee WITH inventory:write permission
+    const resWithWritePerm = await simulateCategoryPostRoute({
+      cookies: { kasi_session: authEmpToken },
+      body: { name: "Agricultural Tools", description: "Sprayers, pruners, and implements" },
+    });
+    assert(
+      resWithWritePerm.status === 201 && resWithWritePerm.category?._id !== undefined,
+      "7.5 Authenticated employee with inventory:write creates category (HTTP 201)"
+    );
+
+    // 7.6 Expired session token
+    const resExpired = await simulateCategoryPostRoute({
+      cookies: { kasi_session: expiredToken },
+      body: { name: "Hybrid Seeds" },
+    });
+    assert(
+      resExpired.status === 401,
+      "7.6 Expired session token is rejected with HTTP 401 Unauthorized"
+    );
+
+    // 7.7 Inactive/deactivated employee
+    const resInactive = await simulateCategoryPostRoute({
+      cookies: { kasi_session: inactiveToken },
+      body: { name: "Irrigation Drip Kits" },
+    });
+    assert(
+      resInactive.status === 401,
+      "7.7 Inactive user session is revoked and rejected with HTTP 401 Unauthorized"
+    );
 
     console.log("\n==========================================================");
     console.log(`PHASE 4 TEST SUMMARY: ${passedTests} PASSED, ${failedTests} FAILED`);
