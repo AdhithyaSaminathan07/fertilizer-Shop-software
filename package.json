@@ -11,6 +11,7 @@
     "reset:owner": "node scripts/reset-owner-password.mjs",
     "test:auth": "node scripts/test-auth-suite.mjs",
     "test:product": "node scripts/test-product-suite.mjs",
+    "test:phase5a": "node scripts/test-phase5a-suite.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

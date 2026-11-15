@@ -5,4 +5,5 @@ export * from "./rate-limit";
 export * from "./category";
 export * from "./product";
 export * from "./batch";
+export * from "./supplier";
 
