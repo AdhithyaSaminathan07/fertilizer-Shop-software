@@ -6,4 +6,5 @@ export * from "./category";
 export * from "./product";
 export * from "./batch";
 export * from "./supplier";
+export * from "./purchase";
 

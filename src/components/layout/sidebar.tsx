@@ -21,6 +21,7 @@ import {
   UserCheck,
   Tag,
   Package,
+  ClipboardList,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -65,9 +66,14 @@ export const NAV_ITEMS: NavItem[] = [
     icon: Receipt,
   },
   {
-    title: "Suppliers & Purchases",
+    title: "Suppliers",
     href: "/suppliers",
     icon: Truck,
+  },
+  {
+    title: "Purchase Orders",
+    href: "/purchases",
+    icon: ClipboardList,
   },
   {
     title: "Credit Ledger (Khata)",

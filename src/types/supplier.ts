@@ -9,6 +9,7 @@ export interface SupplierAddress {
 
 export interface ISupplier {
   id: string;
+  _id?: string;
   name: string;
   contactPerson?: string;
   phone: string;

@@ -20,6 +20,7 @@ import {
   ShieldCheck,
   ChevronRight,
   Filter,
+  ClipboardList,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -287,6 +288,12 @@ export default function SuppliersPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Link href="/purchases">
+            <Button variant="outline" size="md" className="gap-2">
+              <ClipboardList className="h-4 w-4" />
+              <span className="hidden sm:inline">Purchase Orders</span>
+            </Button>
+          </Link>
           <Button
             onClick={() => setRefreshKey((k) => k + 1)}
             variant="outline"

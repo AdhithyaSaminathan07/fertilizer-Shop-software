@@ -39,6 +39,8 @@ export default function SupplierProfilePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"overview" | "purchases" | "payments">("overview");
+  const [purchases, setPurchases] = useState<any[]>([]);
+  const [purchasesLoading, setPurchasesLoading] = useState(false);
 
   // Edit dialog state
   const [isEditOpen, setIsEditOpen] = useState(false);
@@ -87,6 +89,28 @@ export default function SupplierProfilePage() {
       isMounted = false;
     };
   }, [id, refreshKey]);
+
+  useEffect(() => {
+    if (!id || activeTab !== "purchases") return;
+    let isMounted = true;
+    fetch(`/api/purchases?supplierId=${id}`, {
+      credentials: "same-origin",
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (isMounted && data.success && data.data?.purchases) {
+          setPurchases(data.data.purchases);
+        }
+      })
+      .catch((err) => console.error("Error loading supplier purchases:", err))
+      .finally(() => {
+        if (isMounted) setPurchasesLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [id, activeTab]);
 
   const handleOpenEdit = () => {
     if (!supplier) return;
@@ -350,7 +374,10 @@ export default function SupplierProfilePage() {
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab("purchases")}
+            onClick={() => {
+              setActiveTab("purchases");
+              setPurchasesLoading(true);
+            }}
             className={`border-b-2 px-4 py-3 text-sm font-semibold transition-colors ${
               activeTab === "purchases"
                 ? "border-emerald-700 text-emerald-800"
@@ -446,15 +473,95 @@ export default function SupplierProfilePage() {
           )}
 
           {activeTab === "purchases" && (
-            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
-              <Receipt className="mx-auto h-12 w-12 text-slate-300" />
-              <h4 className="mt-3 text-base font-semibold text-slate-800">
-                Purchase Management Ready for Phase 5B
-              </h4>
-              <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">
-                Inward Purchase Orders, supplier invoices, line-item taxes, and discounts will be connected in Phase 5B.
-                No historical purchases exist yet for this supplier.
-              </p>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">
+                    Purchase Orders for {supplier.name}
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    List of all inward purchase orders registered against this supplier.
+                  </p>
+                </div>
+                <Link href="/purchases/new">
+                  <Button variant="primary" size="sm">
+                    + New Purchase Order
+                  </Button>
+                </Link>
+              </div>
+
+              {purchasesLoading ? (
+                <div className="p-8 text-center text-slate-400">
+                  <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-[#176B3A]" />
+                  <p className="text-xs">Loading purchase orders...</p>
+                </div>
+              ) : purchases.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
+                  <Receipt className="mx-auto h-12 w-12 text-slate-300" />
+                  <h4 className="mt-3 text-base font-semibold text-slate-800">
+                    No Purchase Orders Yet
+                  </h4>
+                  <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">
+                    No purchase orders have been created for this supplier yet. Click below to create your first purchase order.
+                  </p>
+                  <div className="mt-4">
+                    <Link href="/purchases/new">
+                      <Button variant="outline" size="sm">
+                        Create Purchase Order
+                      </Button>
+                    </Link>
+                  </div>
+                </div>
+              ) : (
+                <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                  <table className="w-full text-left text-xs text-slate-600">
+                    <thead className="bg-slate-50 font-semibold text-slate-700 border-b border-slate-200">
+                      <tr>
+                        <th className="p-3">PO Number</th>
+                        <th className="p-3">Invoice #</th>
+                        <th className="p-3">Date</th>
+                        <th className="p-3">Status</th>
+                        <th className="p-3 text-right">Total Amount</th>
+                        <th className="p-3 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {purchases.map((po) => (
+                        <tr key={po._id} className="hover:bg-slate-50/60">
+                          <td className="p-3 font-semibold text-[#176B3A]">
+                            <Link href={`/purchases/${po._id}`} className="hover:underline">
+                              {po.purchaseNumber}
+                            </Link>
+                          </td>
+                          <td className="p-3 font-mono">{po.supplierInvoiceNumber}</td>
+                          <td className="p-3">
+                            {new Date(po.purchaseDate || po.createdAt).toLocaleDateString("en-IN", {
+                              day: "numeric",
+                              month: "short",
+                              year: "numeric",
+                            })}
+                          </td>
+                          <td className="p-3">
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700">
+                              {po.status}
+                            </span>
+                          </td>
+                          <td className="p-3 text-right font-bold text-slate-900">
+                            ₹{po.grandTotal?.toFixed(2)}
+                          </td>
+                          <td className="p-3 text-right">
+                            <Link href={`/purchases/${po._id}`}>
+                              <Button variant="outline" size="sm">
+                                View
+                              </Button>
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
