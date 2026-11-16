@@ -63,7 +63,8 @@ export default function PurchaseDetailPage({ params }: PageProps) {
   const [inwardNotes, setInwardNotes] = useState("");
   const [inwardItems, setInwardItems] = useState<
     {
-      productId: string;
+      itemId?: string;
+      productId?: string;
       productName: string;
       primaryUnit: string;
       orderedQty: number;
@@ -158,7 +159,10 @@ export default function PurchaseDetailPage({ params }: PageProps) {
 
     const initial = purchase.items.map((it) => {
       const remaining = Math.max(0, round2(it.orderedQty - (it.receivedQty || 0)));
+      const idKey = it.id || (it as any)._id || "";
+      const batchSuffix = String(it.productId || idKey || "001").slice(-3);
       return {
+        itemId: idKey,
         productId: it.productId,
         productName: it.productSnapshot?.name || "Product",
         primaryUnit: it.unit,
@@ -168,7 +172,7 @@ export default function PurchaseDetailPage({ params }: PageProps) {
         receivedQty: remaining, // default to receiving the rest
         batches: [
           {
-            batchNumber: `BAT-${purchase.purchaseNumber.replace(/[^0-9]/g, "")}-${String(it.productId).slice(-3)}`,
+            batchNumber: `BAT-${purchase.purchaseNumber.replace(/[^0-9]/g, "")}-${batchSuffix}`,
             quantity: remaining,
           },
         ],
@@ -231,7 +235,8 @@ export default function PurchaseDetailPage({ params }: PageProps) {
       const payload = {
         notes: inwardNotes.trim() || undefined,
         items: activeInwardItems.map((it) => ({
-          productId: it.productId,
+          itemId: it.itemId,
+          productId: it.productId || undefined,
           receivedQty: Number(it.receivedQty),
           batches: it.batches.map((b) => ({
             batchNumber: b.batchNumber.trim().toUpperCase(),
@@ -498,8 +503,18 @@ export default function PurchaseDetailPage({ params }: PageProps) {
                 <TableRow key={idx} className="hover:bg-slate-50/50">
                   <TableCell className="text-slate-400 font-mono text-xs">{idx + 1}</TableCell>
                   <TableCell>
-                    <div className="font-medium text-slate-900">
-                      {item.productSnapshot?.name || "Product"}
+                    <div className="font-medium text-slate-900 flex items-center gap-2">
+                      <span>{item.productSnapshot?.name || "Product"}</span>
+                      {item.isManualProduct && !item.saveToCatalogue && (
+                        <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-normal">
+                          Purchase-only
+                        </span>
+                      )}
+                      {item.isManualProduct && item.saveToCatalogue && (
+                        <span className="text-[10px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-normal">
+                          Saved to Catalogue
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-slate-400 flex items-center gap-2 mt-0.5">
                       <span>Brand: {item.productSnapshot?.brand}</span>

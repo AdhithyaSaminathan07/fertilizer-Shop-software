@@ -26,7 +26,7 @@ export interface PurchaseSupplierSnapshot {
 export interface PurchaseProductSnapshot {
   name: string;
   sku?: string;
-  brand: string;
+  brand?: string;
   primaryUnit: ProductUnit | string;
   barcode?: string;
 }
@@ -41,7 +41,9 @@ export interface IPurchaseItemBatch {
 export interface IPurchaseItem {
   id?: string;
   _id?: string;
-  productId: string;
+  productId?: string;
+  isManualProduct?: boolean;
+  saveToCatalogue?: boolean;
   productSnapshot: PurchaseProductSnapshot;
   orderedQty: number; // Invoiced quantity
   receivedQty: number; // Received quantity confirmed so far
@@ -56,7 +58,9 @@ export interface IPurchaseItem {
 }
 
 export interface IPurchaseReceiptItem {
-  productId: string;
+  productId?: string;
+  itemId?: string;
+  productName?: string;
   receivedQty: number;
   recognizedValue: number;
   batches: IPurchaseItemBatch[];

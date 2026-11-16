@@ -34,18 +34,38 @@ export const purchaseItemBatchInputSchema = z
     }
   );
 
-export const purchaseItemInputSchema = z.object({
-  productId: z.string().regex(OBJECT_ID_REGEX, "Valid product selection is required"),
-  orderedQty: z.number().positive("Purchased quantity must be greater than zero"),
-  unitPurchasePrice: z.number().min(0, "Unit purchase price cannot be negative"),
-  discountAmount: z.number().min(0, "Discount cannot be negative").default(0),
-  taxRate: z
-    .number()
-    .min(0, "Tax rate cannot be negative")
-    .max(100, "Tax rate cannot exceed 100%")
-    .default(0),
-  batches: z.array(purchaseItemBatchInputSchema).optional(),
-});
+export const purchaseItemInputSchema = z
+  .object({
+    productId: z.string().regex(OBJECT_ID_REGEX, "Valid product selection is required").optional().or(z.literal("")),
+    isManualProduct: z.boolean().default(false),
+    manualProductName: z.string().trim().max(150, "Product name cannot exceed 150 characters").optional().or(z.literal("")),
+    manualBrand: z.string().trim().max(100, "Brand cannot exceed 100 characters").optional().or(z.literal("")),
+    manualUnit: z.string().trim().max(50, "Unit cannot exceed 50 characters").optional().or(z.literal("")),
+    manualSellingPrice: z.number().min(0, "Selling price cannot be negative").optional(),
+    manualCategoryId: z.string().regex(OBJECT_ID_REGEX).optional().or(z.literal("")),
+    saveToCatalogue: z.boolean().default(false),
+    orderedQty: z.number().positive("Purchased quantity must be greater than zero"),
+    unitPurchasePrice: z.number().min(0, "Unit purchase price cannot be negative"),
+    discountAmount: z.number().min(0, "Discount cannot be negative").default(0),
+    taxRate: z
+      .number()
+      .min(0, "Tax rate cannot be negative")
+      .max(100, "Tax rate cannot exceed 100%")
+      .default(0),
+    batches: z.array(purchaseItemBatchInputSchema).optional(),
+  })
+  .refine(
+    (item) => {
+      if (item.isManualProduct) {
+        return Boolean(item.manualProductName && item.manualProductName.trim().length >= 2);
+      }
+      return Boolean(item.productId && OBJECT_ID_REGEX.test(item.productId));
+    },
+    {
+      message: "Please select an existing product or provide a manual product name (at least 2 characters)",
+      path: ["productId"],
+    }
+  );
 
 export const createPurchaseSchema = z.object({
   supplierId: z.string().regex(OBJECT_ID_REGEX, "A registered supplier must be selected"),
@@ -100,13 +120,19 @@ export const updatePurchaseDraftSchema = z.object({
   notes: z.string().max(1000).trim().optional().or(z.literal("")),
 });
 
-export const inwardItemInputSchema = z.object({
-  productId: z.string().regex(OBJECT_ID_REGEX, "Valid product selection is required"),
-  receivedQty: z.number().positive("Received quantity must be greater than zero"),
-  batches: z
-    .array(purchaseItemBatchInputSchema)
-    .min(1, "At least one batch must be specified for received stock"),
-});
+export const inwardItemInputSchema = z
+  .object({
+    itemId: z.string().optional(),
+    productId: z.string().regex(OBJECT_ID_REGEX, "Valid product selection is required").optional().or(z.literal("")),
+    receivedQty: z.number().positive("Received quantity must be greater than zero"),
+    batches: z
+      .array(purchaseItemBatchInputSchema)
+      .min(1, "At least one batch must be specified for received stock"),
+  })
+  .refine((data) => Boolean(data.itemId || (data.productId && OBJECT_ID_REGEX.test(data.productId))), {
+    message: "Either itemId or a valid productId is required for inward receipt item",
+    path: ["productId"],
+  });
 
 export const confirmInwardSchema = z.object({
   items: z

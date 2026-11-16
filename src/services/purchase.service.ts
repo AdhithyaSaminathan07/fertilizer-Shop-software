@@ -1,8 +1,10 @@
 import mongoose from "mongoose";
+import crypto from "crypto";
 import { connectDB } from "@/lib/db";
 import { Purchase, type IPurchaseDocument } from "@/models/purchase";
 import { Supplier } from "@/models/supplier";
 import { Product } from "@/models/product";
+import { Category } from "@/models/category";
 import { Batch } from "@/models/batch";
 import { logAuditEvent } from "@/lib/auth";
 import type {
@@ -55,6 +57,83 @@ export function calculateItemLineValues(
   const tax = round2(taxable * ((taxRate || 0) / 100));
   const lineTotal = round2(taxable + tax);
   return { gross, discount, taxable, tax, lineTotal };
+}
+
+/**
+ * Generates collision-proof SKU for newly saved catalogue products
+ */
+export async function generateAutoSku(session?: mongoose.ClientSession): Promise<string> {
+  let collision = true;
+  let finalSku = "";
+  while (collision) {
+    const timePart = Date.now().toString(36).toUpperCase();
+    const randHex = crypto.randomBytes(3).toString("hex").toUpperCase();
+    finalSku = `KASI-PRD-${timePart}-${randHex}`;
+    let q = Product.findOne({ sku: finalSku });
+    if (session) q = q.session(session);
+    const existing = await q;
+    if (!existing) {
+      collision = false;
+    }
+  }
+  return finalSku;
+}
+
+/**
+ * Searches for duplicate active catalogue product by name & brand (case-insensitive)
+ */
+export async function findDuplicateCatalogueProduct(
+  name: string,
+  brand?: string,
+  session?: mongoose.ClientSession
+) {
+  const escapedName = name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const query: any = {
+    name: { $regex: `^${escapedName}$`, $options: "i" },
+    status: { $ne: "ARCHIVED" },
+  };
+  if (brand && brand.trim() && brand.trim().toLowerCase() !== "generic") {
+    const escapedBrand = brand.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    query.brand = { $regex: `^${escapedBrand}$`, $options: "i" };
+  }
+  let q = Product.findOne(query);
+  if (session) q = q.session(session);
+  return q;
+}
+
+/**
+ * Resolves an active category ID or falls back to first active category
+ */
+export async function resolveActiveCategoryId(
+  manualCategoryId?: string,
+  session?: mongoose.ClientSession
+): Promise<mongoose.Types.ObjectId> {
+  if (manualCategoryId && mongoose.Types.ObjectId.isValid(manualCategoryId)) {
+    let catQuery = Category.findById(manualCategoryId);
+    if (session) catQuery = catQuery.session(session);
+    const cat = await catQuery;
+    if (cat && cat.status === "ACTIVE") {
+      return cat._id;
+    }
+  }
+  let fallbackQuery = Category.findOne({ status: "ACTIVE" });
+  if (session) fallbackQuery = fallbackQuery.session(session);
+  let fallback = await fallbackQuery;
+  if (!fallback) {
+    const [created] = await Category.create(
+      [
+        {
+          name: "General Agri Products",
+          slug: "general-agri-products",
+          description: "Default category for manually entered purchase items",
+          status: "ACTIVE",
+        },
+      ],
+      session ? { session } : {}
+    );
+    return created._id;
+  }
+  return fallback._id;
 }
 
 /**
@@ -205,7 +284,7 @@ export async function listPurchases(params: PurchaseFilterParams): Promise<{
       ...it,
       id: it._id?.toString(),
       _id: it._id?.toString(),
-      productId: it.productId.toString(),
+      productId: it.productId ? it.productId.toString() : undefined,
     })),
   }));
 
@@ -250,7 +329,7 @@ export async function getPurchaseById(id: string): Promise<IPurchase> {
       ...it,
       id: it._id?.toString(),
       _id: it._id?.toString(),
-      productId: it.productId.toString(),
+      productId: it.productId ? it.productId.toString() : undefined,
     })),
   } as unknown) as IPurchase;
 }
@@ -311,20 +390,15 @@ export async function createPurchase(
   const items: any[] = [];
 
   for (const itemInput of input.items) {
-    const product = await Product.findById(itemInput.productId);
-    if (!product) {
-      throw new Error(`Product with ID '${itemInput.productId}' not found`);
-    }
-    if (product.status !== "ACTIVE") {
-      throw new Error(`Product '${product.name}' is not ACTIVE`);
-    }
-
     // Validate batch quantities if batches are provided
     if (itemInput.batches && itemInput.batches.length > 0) {
       const batchSum = itemInput.batches.reduce((sum, b) => sum + b.quantity, 0);
       if (round2(batchSum) !== round2(itemInput.orderedQty)) {
+        const prodName = itemInput.isManualProduct
+          ? itemInput.manualProductName || "Manual Product"
+          : "selected product";
         throw new Error(
-          `Sum of batch quantities (${batchSum}) must equal ordered quantity (${itemInput.orderedQty}) for product '${product.name}'`
+          `Sum of batch quantities (${batchSum}) must equal ordered quantity (${itemInput.orderedQty}) for product '${prodName}'`
         );
       }
     }
@@ -336,20 +410,83 @@ export async function createPurchase(
       itemInput.taxRate || 0
     );
 
-    const productSnapshot: PurchaseProductSnapshot = {
-      name: product.name,
-      sku: product.sku || undefined,
-      brand: product.brand,
-      primaryUnit: product.primaryUnit,
-      barcode: product.barcode || undefined,
-    };
+    let productId: mongoose.Types.ObjectId | undefined = undefined;
+    let productSnapshot: PurchaseProductSnapshot;
+    let unit: string = "BAGS";
+
+    if (itemInput.isManualProduct) {
+      const manualName = (itemInput.manualProductName || "").trim();
+      const manualBrand = (itemInput.manualBrand || "").trim() || "Generic";
+      const manualUnit = (itemInput.manualUnit || "").trim() || "BAGS";
+      unit = manualUnit;
+
+      productSnapshot = {
+        name: manualName,
+        sku: undefined,
+        brand: manualBrand,
+        primaryUnit: manualUnit,
+        barcode: undefined,
+      };
+
+      if (itemInput.saveToCatalogue) {
+        // If not receiveNow, check duplicate or create catalog product now with 0 stock
+        // (if receiveNow is true, creation happens inside createAndInwardPurchaseAtomic transaction)
+        if (!input.receiveNow) {
+          const duplicate = await findDuplicateCatalogueProduct(manualName, manualBrand);
+          if (duplicate) {
+            productId = duplicate._id as mongoose.Types.ObjectId;
+            productSnapshot.sku = duplicate.sku || undefined;
+            productSnapshot.brand = duplicate.brand;
+            productSnapshot.primaryUnit = duplicate.primaryUnit;
+          } else {
+            const autoSku = await generateAutoSku();
+            const catId = await resolveActiveCategoryId(itemInput.manualCategoryId);
+            const [newProd] = await Product.create([
+              {
+                name: manualName,
+                sku: autoSku,
+                brand: manualBrand,
+                categoryId: catId,
+                primaryUnit: manualUnit as any,
+                purchasePrice: round2(itemInput.unitPurchasePrice),
+                sellingPrice: round2(itemInput.manualSellingPrice || itemInput.unitPurchasePrice),
+                minStockThreshold: 10,
+                status: "ACTIVE",
+                currentStock: 0,
+              },
+            ]);
+            productId = newProd._id as mongoose.Types.ObjectId;
+            productSnapshot.sku = autoSku;
+          }
+        }
+      }
+    } else {
+      const product = await Product.findById(itemInput.productId);
+      if (!product) {
+        throw new Error(`Product with ID '${itemInput.productId}' not found`);
+      }
+      if (product.status !== "ACTIVE") {
+        throw new Error(`Product '${product.name}' is not ACTIVE`);
+      }
+      productId = product._id as mongoose.Types.ObjectId;
+      unit = product.primaryUnit;
+      productSnapshot = {
+        name: product.name,
+        sku: product.sku || undefined,
+        brand: product.brand,
+        primaryUnit: product.primaryUnit,
+        barcode: product.barcode || undefined,
+      };
+    }
 
     items.push({
-      productId: product._id,
+      productId,
+      isManualProduct: Boolean(itemInput.isManualProduct),
+      saveToCatalogue: Boolean(itemInput.saveToCatalogue),
       productSnapshot,
       orderedQty: itemInput.orderedQty,
       receivedQty: 0,
-      unit: product.primaryUnit,
+      unit,
       unitPurchasePrice: round2(itemInput.unitPurchasePrice),
       discountAmount: calc.discount,
       taxRate: round2(itemInput.taxRate || 0),
@@ -473,62 +610,122 @@ async function createAndInwardPurchaseAtomic(
         item.recognizedValue = item.lineTotal;
         totalReceivedQty += item.orderedQty;
 
-        // 1. Atomic Product stock increment
-        await Product.findByIdAndUpdate(
-          item.productId,
-          { $inc: { currentStock: item.orderedQty } },
-          { session }
-        );
-
-        // 2. Atomic Batch processing
-        const itemBatches = item.batches && item.batches.length > 0
-          ? item.batches
-          : [
-              {
-                batchNumber: `BAT-${params.purchaseNumber.replace(/[^0-9]/g, "")}-${String(item.productId).slice(-4)}`,
-                quantity: item.orderedQty,
-              },
-            ];
-
-        for (const b of itemBatches) {
-          // If batch exists, validate conflicting dates
-          const existingBatch = await Batch.findOne({
-            productId: item.productId,
-            batchNumber: b.batchNumber.toUpperCase().trim(),
-          }).session(session);
-
-          if (existingBatch) {
-            if (
-              b.expiryDate &&
-              existingBatch.expiryDate &&
-              new Date(b.expiryDate).toISOString() !== new Date(existingBatch.expiryDate).toISOString()
-            ) {
-              throw new Error(
-                `Conflicting expiry date for existing batch '${b.batchNumber}'. Existing: ${existingBatch.expiryDate.toISOString()}, Provided: ${new Date(b.expiryDate).toISOString()}`
-              );
-            }
-            existingBatch.quantity += b.quantity;
-            await existingBatch.save({ session });
+        // If item is a manual product requested to be saved to catalogue and not yet created
+        if (item.isManualProduct && item.saveToCatalogue && !item.productId) {
+          const duplicate = await findDuplicateCatalogueProduct(
+            item.productSnapshot.name,
+            item.productSnapshot.brand,
+            session
+          );
+          if (duplicate) {
+            item.productId = duplicate._id;
+            item.productSnapshot.sku = duplicate.sku || undefined;
+            item.productSnapshot.brand = duplicate.brand;
+            item.productSnapshot.primaryUnit = duplicate.primaryUnit;
           } else {
-            await Batch.create(
+            const autoSku = await generateAutoSku(session);
+            const catId = await resolveActiveCategoryId(undefined, session);
+            const [newProd] = await Product.create(
               [
                 {
-                  productId: item.productId,
-                  batchNumber: b.batchNumber.toUpperCase().trim(),
-                  manufacturingDate: b.manufacturingDate ? new Date(b.manufacturingDate) : undefined,
-                  expiryDate: b.expiryDate ? new Date(b.expiryDate) : undefined,
-                  quantity: b.quantity,
-                  purchasePrice: item.unitPurchasePrice,
+                  name: item.productSnapshot.name,
+                  sku: autoSku,
+                  brand: item.productSnapshot.brand || "Generic",
+                  categoryId: catId,
+                  primaryUnit: item.unit as any,
+                  purchasePrice: round2(item.unitPurchasePrice),
+                  sellingPrice: round2(item.unitPurchasePrice),
+                  minStockThreshold: 10,
                   status: "ACTIVE",
+                  currentStock: 0,
                 },
               ],
               { session }
             );
+            item.productId = newProd._id;
+            item.productSnapshot.sku = autoSku;
           }
         }
 
+        // Process inventory stock & batches if item has a catalogue productId
+        let itemBatches: any[] = [];
+        if (item.productId) {
+          // 1. Atomic Product stock increment
+          await Product.findByIdAndUpdate(
+            item.productId,
+            { $inc: { currentStock: item.orderedQty } },
+            { session }
+          );
+
+          // 2. Atomic Batch processing
+          itemBatches =
+            item.batches && item.batches.length > 0
+              ? item.batches
+              : [
+                  {
+                    batchNumber: `BAT-${params.purchaseNumber.replace(/[^0-9]/g, "")}-${String(
+                      item.productId
+                    ).slice(-4)}`,
+                    quantity: item.orderedQty,
+                  },
+                ];
+
+          for (const b of itemBatches) {
+            const existingBatch = await Batch.findOne({
+              productId: item.productId,
+              batchNumber: b.batchNumber.toUpperCase().trim(),
+            }).session(session);
+
+            if (existingBatch) {
+              if (
+                b.expiryDate &&
+                existingBatch.expiryDate &&
+                new Date(b.expiryDate).toISOString() !==
+                  new Date(existingBatch.expiryDate).toISOString()
+              ) {
+                throw new Error(
+                  `Conflicting expiry date for existing batch '${b.batchNumber}'. Existing: ${existingBatch.expiryDate.toISOString()}, Provided: ${new Date(
+                    b.expiryDate
+                  ).toISOString()}`
+                );
+              }
+              existingBatch.quantity += b.quantity;
+              await existingBatch.save({ session });
+            } else {
+              await Batch.create(
+                [
+                  {
+                    productId: item.productId,
+                    batchNumber: b.batchNumber.toUpperCase().trim(),
+                    manufacturingDate: b.manufacturingDate
+                      ? new Date(b.manufacturingDate)
+                      : undefined,
+                    expiryDate: b.expiryDate ? new Date(b.expiryDate) : undefined,
+                    quantity: b.quantity,
+                    purchasePrice: item.unitPurchasePrice,
+                    status: "ACTIVE",
+                  },
+                ],
+                { session }
+              );
+            }
+          }
+        } else {
+          // Purchase-only manual line item: do not mutate Product/Batch collections
+          itemBatches =
+            item.batches && item.batches.length > 0
+              ? item.batches
+              : [
+                  {
+                    batchNumber: `BAT-${params.purchaseNumber.replace(/[^0-9]/g, "")}-MAN`,
+                    quantity: item.orderedQty,
+                  },
+                ];
+        }
+
         receiptItems.push({
-          productId: item.productId,
+          productId: item.productId ? item.productId.toString() : undefined,
+          productName: item.productSnapshot?.name,
           receivedQty: item.orderedQty,
           recognizedValue: item.lineTotal,
           batches: itemBatches,
@@ -656,11 +853,23 @@ export async function confirmPurchaseInward(
       const receiptItems: any[] = [];
 
       for (const inwardItem of input.items) {
-        const lineItem = purchase.items.find(
-          (it) => it.productId.toString() === inwardItem.productId
-        );
+        const lineItem = purchase.items.find((it) => {
+          if (inwardItem.itemId && (it as any)._id?.toString() === inwardItem.itemId) {
+            return true;
+          }
+          if (
+            inwardItem.productId &&
+            it.productId &&
+            it.productId.toString() === inwardItem.productId
+          ) {
+            return true;
+          }
+          return false;
+        });
         if (!lineItem) {
-          throw new Error(`Product '${inwardItem.productId}' does not exist on this purchase bill`);
+          throw new Error(
+            `Line item '${inwardItem.itemId || inwardItem.productId}' does not exist on this purchase bill`
+          );
         }
 
         const remainingOrdered = round2(lineItem.orderedQty - lineItem.receivedQty);
@@ -693,47 +902,54 @@ export async function confirmPurchaseInward(
           );
         }
 
-        // 1. Increment Product Stock atomically
-        await Product.findByIdAndUpdate(
-          lineItem.productId,
-          { $inc: { currentStock: inwardItem.receivedQty } },
-          { session }
-        );
+        // 1. Increment Product Stock atomically (if catalogue product)
+        if (lineItem.productId) {
+          await Product.findByIdAndUpdate(
+            lineItem.productId,
+            { $inc: { currentStock: inwardItem.receivedQty } },
+            { session }
+          );
 
-        // 2. Upsert/Increment Batches atomically
-        for (const b of inwardItem.batches) {
-          const existingBatch = await Batch.findOne({
-            productId: lineItem.productId,
-            batchNumber: b.batchNumber.toUpperCase().trim(),
-          }).session(session);
+          // 2. Upsert/Increment Batches atomically
+          for (const b of inwardItem.batches) {
+            const existingBatch = await Batch.findOne({
+              productId: lineItem.productId,
+              batchNumber: b.batchNumber.toUpperCase().trim(),
+            }).session(session);
 
-          if (existingBatch) {
-            if (
-              b.expiryDate &&
-              existingBatch.expiryDate &&
-              new Date(b.expiryDate).toISOString() !== new Date(existingBatch.expiryDate).toISOString()
-            ) {
-              throw new Error(
-                `Conflicting expiry date for existing batch '${b.batchNumber}'. Existing: ${existingBatch.expiryDate.toISOString()}, Provided: ${new Date(b.expiryDate).toISOString()}`
+            if (existingBatch) {
+              if (
+                b.expiryDate &&
+                existingBatch.expiryDate &&
+                new Date(b.expiryDate).toISOString() !==
+                  new Date(existingBatch.expiryDate).toISOString()
+              ) {
+                throw new Error(
+                  `Conflicting expiry date for existing batch '${b.batchNumber}'. Existing: ${existingBatch.expiryDate.toISOString()}, Provided: ${new Date(
+                    b.expiryDate
+                  ).toISOString()}`
+                );
+              }
+              existingBatch.quantity += b.quantity;
+              await existingBatch.save({ session });
+            } else {
+              await Batch.create(
+                [
+                  {
+                    productId: lineItem.productId,
+                    batchNumber: b.batchNumber.toUpperCase().trim(),
+                    manufacturingDate: b.manufacturingDate
+                      ? new Date(b.manufacturingDate)
+                      : undefined,
+                    expiryDate: b.expiryDate ? new Date(b.expiryDate) : undefined,
+                    quantity: b.quantity,
+                    purchasePrice: lineItem.unitPurchasePrice,
+                    status: "ACTIVE",
+                  },
+                ],
+                { session }
               );
             }
-            existingBatch.quantity += b.quantity;
-            await existingBatch.save({ session });
-          } else {
-            await Batch.create(
-              [
-                {
-                  productId: lineItem.productId,
-                  batchNumber: b.batchNumber.toUpperCase().trim(),
-                  manufacturingDate: b.manufacturingDate ? new Date(b.manufacturingDate) : undefined,
-                  expiryDate: b.expiryDate ? new Date(b.expiryDate) : undefined,
-                  quantity: b.quantity,
-                  purchasePrice: lineItem.unitPurchasePrice,
-                  status: "ACTIVE",
-                },
-              ],
-              { session }
-            );
           }
         }
 
@@ -745,7 +961,9 @@ export async function confirmPurchaseInward(
         totalNewlyRecognizedValue = round2(totalNewlyRecognizedValue + itemRecognizedIncrement);
 
         receiptItems.push({
-          productId: lineItem.productId,
+          productId: lineItem.productId ? lineItem.productId.toString() : undefined,
+          itemId: (lineItem as any)._id ? (lineItem as any)._id.toString() : undefined,
+          productName: lineItem.productSnapshot?.name,
           receivedQty: inwardItem.receivedQty,
           recognizedValue: itemRecognizedIncrement,
           batches: inwardItem.batches,
@@ -867,9 +1085,66 @@ export async function updatePurchaseDraft(
     const items: any[] = [];
 
     for (const itemInput of input.items) {
-      const product = await Product.findById(itemInput.productId);
-      if (!product) {
-        throw new Error(`Product '${itemInput.productId}' not found`);
+      let productId: mongoose.Types.ObjectId | undefined = undefined;
+      let productSnapshot: PurchaseProductSnapshot;
+      let unit: string = "BAGS";
+
+      if (itemInput.isManualProduct) {
+        const manualName = (itemInput.manualProductName || "").trim();
+        const manualBrand = (itemInput.manualBrand || "").trim() || "Generic";
+        const manualUnit = (itemInput.manualUnit || "").trim() || "BAGS";
+        unit = manualUnit;
+
+        productSnapshot = {
+          name: manualName,
+          sku: undefined,
+          brand: manualBrand,
+          primaryUnit: manualUnit,
+          barcode: undefined,
+        };
+
+        if (itemInput.saveToCatalogue) {
+          const duplicate = await findDuplicateCatalogueProduct(manualName, manualBrand);
+          if (duplicate) {
+            productId = duplicate._id as mongoose.Types.ObjectId;
+            productSnapshot.sku = duplicate.sku || undefined;
+            productSnapshot.brand = duplicate.brand;
+            productSnapshot.primaryUnit = duplicate.primaryUnit;
+          } else {
+            const autoSku = await generateAutoSku();
+            const catId = await resolveActiveCategoryId(itemInput.manualCategoryId);
+            const [newProd] = await Product.create([
+              {
+                name: manualName,
+                sku: autoSku,
+                brand: manualBrand,
+                categoryId: catId,
+                primaryUnit: manualUnit as any,
+                purchasePrice: round2(itemInput.unitPurchasePrice),
+                sellingPrice: round2(itemInput.manualSellingPrice || itemInput.unitPurchasePrice),
+                minStockThreshold: 10,
+                status: "ACTIVE",
+                currentStock: 0,
+              },
+            ]);
+            productId = newProd._id as mongoose.Types.ObjectId;
+            productSnapshot.sku = autoSku;
+          }
+        }
+      } else {
+        const product = await Product.findById(itemInput.productId);
+        if (!product) {
+          throw new Error(`Product '${itemInput.productId}' not found`);
+        }
+        productId = product._id as mongoose.Types.ObjectId;
+        unit = product.primaryUnit;
+        productSnapshot = {
+          name: product.name,
+          sku: product.sku || undefined,
+          brand: product.brand,
+          primaryUnit: product.primaryUnit,
+          barcode: product.barcode || undefined,
+        };
       }
 
       const calc = calculateItemLineValues(
@@ -880,17 +1155,13 @@ export async function updatePurchaseDraft(
       );
 
       items.push({
-        productId: product._id,
-        productSnapshot: {
-          name: product.name,
-          sku: product.sku || undefined,
-          brand: product.brand,
-          primaryUnit: product.primaryUnit,
-          barcode: product.barcode || undefined,
-        },
+        productId,
+        isManualProduct: Boolean(itemInput.isManualProduct),
+        saveToCatalogue: Boolean(itemInput.saveToCatalogue),
+        productSnapshot,
         orderedQty: itemInput.orderedQty,
         receivedQty: 0,
-        unit: product.primaryUnit,
+        unit,
         unitPurchasePrice: round2(itemInput.unitPurchasePrice),
         discountAmount: calc.discount,
         taxRate: round2(itemInput.taxRate || 0),
@@ -1001,7 +1272,8 @@ export async function amendPurchase(
   // Floor Guard Check
   for (const itemInput of input.items) {
     const existing = purchase.items.find(
-      (it) => it.productId.toString() === itemInput.productId
+      (it) => (it.productId && itemInput.productId && it.productId.toString() === itemInput.productId) ||
+              ((it as any)._id && (itemInput as any).itemId && (it as any)._id.toString() === (itemInput as any).itemId)
     );
     if (existing && existing.receivedQty > 0) {
       if (itemInput.orderedQty < existing.receivedQty) {
@@ -1020,14 +1292,38 @@ export async function amendPurchase(
   const revisedItems: any[] = [];
 
   for (const itemInput of input.items) {
-    const product = await Product.findById(itemInput.productId);
-    if (!product) {
-      throw new Error(`Product '${itemInput.productId}' not found`);
-    }
-
     const existing = purchase.items.find(
-      (it) => it.productId.toString() === itemInput.productId
+      (it) => (it.productId && itemInput.productId && it.productId.toString() === itemInput.productId) ||
+              ((it as any)._id && (itemInput as any).itemId && (it as any)._id.toString() === (itemInput as any).itemId)
     );
+
+    let productId: mongoose.Types.ObjectId | undefined = undefined;
+    let productSnapshot: PurchaseProductSnapshot;
+    let unit: string = "BAGS";
+
+    if (itemInput.isManualProduct || (!itemInput.productId && existing?.isManualProduct)) {
+      unit = itemInput.manualUnit || existing?.unit || "BAGS";
+      productSnapshot = existing?.productSnapshot || {
+        name: itemInput.manualProductName || "Manual Item",
+        brand: itemInput.manualBrand || "Generic",
+        primaryUnit: unit,
+      };
+      productId = existing?.productId ? new mongoose.Types.ObjectId(existing.productId) : undefined;
+    } else {
+      const product = await Product.findById(itemInput.productId);
+      if (!product) {
+        throw new Error(`Product '${itemInput.productId}' not found`);
+      }
+      productId = product._id as mongoose.Types.ObjectId;
+      unit = product.primaryUnit;
+      productSnapshot = {
+        name: product.name,
+        sku: product.sku || undefined,
+        brand: product.brand,
+        primaryUnit: product.primaryUnit,
+        barcode: product.barcode || undefined,
+      };
+    }
 
     const calc = calculateItemLineValues(
       itemInput.orderedQty,
@@ -1037,17 +1333,13 @@ export async function amendPurchase(
     );
 
     revisedItems.push({
-      productId: product._id,
-      productSnapshot: {
-        name: product.name,
-        sku: product.sku || undefined,
-        brand: product.brand,
-        primaryUnit: product.primaryUnit,
-        barcode: product.barcode || undefined,
-      },
+      productId,
+      isManualProduct: Boolean(itemInput.isManualProduct || existing?.isManualProduct),
+      saveToCatalogue: Boolean(itemInput.saveToCatalogue || existing?.saveToCatalogue),
+      productSnapshot,
       orderedQty: itemInput.orderedQty,
       receivedQty: existing ? existing.receivedQty : 0,
-      unit: product.primaryUnit,
+      unit,
       unitPurchasePrice: round2(itemInput.unitPurchasePrice),
       discountAmount: calc.discount,
       taxRate: round2(itemInput.taxRate || 0),

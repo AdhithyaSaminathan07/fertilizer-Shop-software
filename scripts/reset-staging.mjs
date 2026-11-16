@@ -284,3 +284,4 @@ resetStagingDatabase().catch((err) => {
   console.error("Fatal error resetting staging database:", err.message);
   process.exit(1);
 });
+

@@ -98,11 +98,13 @@ const PurchaseItemBatchSchema = new mongoose.Schema(
 
 const PurchaseItemSchema = new mongoose.Schema(
   {
-    productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: false },
+    isManualProduct: { type: Boolean, default: false },
+    saveToCatalogue: { type: Boolean, default: false },
     productSnapshot: {
       name: { type: String, required: true },
       sku: { type: String },
-      brand: { type: String, required: true },
+      brand: { type: String, default: "Generic" },
       primaryUnit: { type: String, required: true },
       barcode: { type: String },
     },
@@ -122,7 +124,9 @@ const PurchaseItemSchema = new mongoose.Schema(
 
 const PurchaseReceiptItemSchema = new mongoose.Schema(
   {
-    productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: false },
+    itemId: { type: mongoose.Schema.Types.ObjectId, required: false },
+    productName: { type: String },
     receivedQty: { type: Number, required: true },
     recognizedValue: { type: Number, required: true },
     batches: [PurchaseItemBatchSchema],
@@ -706,6 +710,297 @@ async function runPhase5BTestSuite() {
     assert(hasPermission(owner, "suppliers:manage") === true, "Owner has suppliers:manage");
     assert(hasPermission(clerk, "suppliers:view") === true, "Clerk has suppliers:view");
     assert(hasPermission(clerk, "suppliers:manage") === false, "Clerk denied suppliers:manage");
+
+    console.log("\n----------------------------------------------------------");
+    console.log("TEST 9: FREE ENTRY — PURCHASE-ONLY MANUAL PRODUCT");
+    console.log("----------------------------------------------------------");
+
+    const productCountBefore = await Product.countDocuments();
+    const neemCalc = calculateItemLineValues(20, 450, 0, 12); // 20 * 450 = 9000, 12% tax = 1080 -> 10080
+
+    const billManualPurchaseOnly = await Purchase.create({
+      purchaseNumber: "PUR-202611-0003",
+      supplierId: supplierRanga._id,
+      supplierSnapshot: {
+        name: supplierRanga.name,
+        phone: supplierRanga.phone,
+      },
+      supplierInvoiceNumber: "INV-NEEM-001",
+      supplierInvoiceDate: new Date("2026-11-16"),
+      items: [
+        {
+          productId: undefined,
+          isManualProduct: true,
+          saveToCatalogue: false,
+          productSnapshot: {
+            name: "Neem Oil 1L Spray",
+            brand: "EcoAgro Organics",
+            primaryUnit: "BOTTLES",
+          },
+          orderedQty: 20,
+          receivedQty: 0,
+          unit: "BOTTLES",
+          unitPurchasePrice: 450,
+          discountAmount: 0,
+          taxRate: 12,
+          taxAmount: neemCalc.tax,
+          lineTotal: neemCalc.lineTotal,
+          recognizedValue: 0,
+          batches: [{ batchNumber: "BAT-NEEM-99", quantity: 20 }],
+        },
+      ],
+      subtotal: neemCalc.taxable,
+      discountAmount: 0,
+      taxAmount: neemCalc.tax,
+      grandTotal: neemCalc.lineTotal,
+      receivedQty: 0,
+      recognizedInvoiceValue: 0,
+      amountPaid: 0,
+      outstandingAmount: 0,
+      paymentStatus: "UNPAID",
+      status: "PENDING_RECEIPT",
+      receipts: [],
+      amendments: [],
+      createdById: owner._id,
+    });
+
+    const productCountAfterManual = await Product.countDocuments();
+    assert(
+      productCountBefore === productCountAfterManual,
+      "Purchase-only product does NOT create a record in Product catalogue (2 === 2)"
+    );
+
+    const savedManualItem = billManualPurchaseOnly.items[0];
+    assert(!savedManualItem.productId, "Purchase-only item has no productId reference");
+    assert(savedManualItem.isManualProduct === true, "Item marked as isManualProduct = true");
+    assert(savedManualItem.saveToCatalogue === false, "Item marked as saveToCatalogue = false");
+    assert(savedManualItem.productSnapshot.name === "Neem Oil 1L Spray", "Snapshot preserved exact product name");
+    assert(savedManualItem.productSnapshot.brand === "EcoAgro Organics", "Snapshot preserved exact brand");
+    assert(savedManualItem.productSnapshot.primaryUnit === "BOTTLES", "Snapshot preserved primary unit");
+    assert(billManualPurchaseOnly.grandTotal === 10080, "Financial calculations exact (₹10,080.00)");
+
+    console.log("\n----------------------------------------------------------");
+    console.log("TEST 10: INWARDING PURCHASE-ONLY MANUAL PRODUCT");
+    console.log("----------------------------------------------------------");
+
+    const session4 = await mongoose.startSession();
+    await session4.withTransaction(async () => {
+      const pDoc = await Purchase.findById(billManualPurchaseOnly._id).session(session4);
+      const lineIt = pDoc.items[0];
+
+      // Inwarding purchase-only item: does NOT update Product or Batch collections
+      lineIt.receivedQty = 20;
+      lineIt.recognizedValue = lineIt.lineTotal;
+      pDoc.receivedQty = 20;
+      pDoc.recognizedInvoiceValue = lineIt.lineTotal;
+      pDoc.outstandingAmount = lineIt.lineTotal;
+      pDoc.status = "RECEIVED";
+
+      pDoc.receipts.push({
+        receiptNumber: "REC-PUR-202611-0003-01",
+        receiptDate: new Date(),
+        receivedById: owner._id,
+        receivedByName: owner.name,
+        items: [
+          {
+            itemId: lineIt._id,
+            productName: lineIt.productSnapshot.name,
+            receivedQty: 20,
+            recognizedValue: lineIt.lineTotal,
+            batches: [{ batchNumber: "BAT-NEEM-99", quantity: 20 }],
+          },
+        ],
+        totalRecognizedValue: lineIt.lineTotal,
+        notes: "Full receipt of purchase-only line item",
+      });
+
+      await pDoc.save({ session: session4 });
+
+      // Atomic supplier ledger increment
+      await Supplier.findByIdAndUpdate(
+        supplierRanga._id,
+        {
+          $inc: {
+            totalPurchases: lineIt.lineTotal,
+            outstandingBalance: lineIt.lineTotal,
+          },
+        },
+        { session: session4 }
+      );
+    });
+    await session4.endSession();
+
+    const productCountAfterInward = await Product.countDocuments();
+    assert(
+      productCountAfterInward === productCountBefore,
+      "Stock inward of purchase-only product does NOT pollute Product catalog"
+    );
+
+    const updatedManualBill = await Purchase.findById(billManualPurchaseOnly._id);
+    assert(updatedManualBill.status === "RECEIVED", "Purchase bill status transitioned to RECEIVED");
+    assert(updatedManualBill.recognizedInvoiceValue === 10080, "Recognized invoice value equals 10,080.00");
+    assert(updatedManualBill.receipts.length === 1, "Receipt created with purchase-only item batches");
+
+    console.log("\n----------------------------------------------------------");
+    console.log("TEST 11: FREE ENTRY — SAVE TO PRODUCT CATALOGUE");
+    console.log("----------------------------------------------------------");
+
+    // Atomic creation and inwarding of a manual product saved to catalogue
+    const session5 = await mongoose.startSession();
+    let catalogProductCreatedId = null;
+
+    const zincCalc = calculateItemLineValues(15, 800, 0, 5); // 15 * 800 = 12000, 5% tax = 600 -> 12600
+
+    await session5.withTransaction(async () => {
+      // 1. Create Product in catalogue inside transaction with auto-generated SKU
+      const autoSku = `KASI-PRD-${Date.now().toString(36).toUpperCase()}-TEST1`;
+      const [newCatalogProd] = await Product.create(
+        [
+          {
+            name: "Zinc Sulphate 25kg",
+            sku: autoSku,
+            brand: "Coromandel International",
+            primaryUnit: "BAGS",
+            purchasePrice: 800,
+            sellingPrice: 950,
+            currentStock: 15,
+            status: "ACTIVE",
+          },
+        ],
+        { session: session5 }
+      );
+      catalogProductCreatedId = newCatalogProd._id;
+
+      // 2. Create Batch inside transaction
+      await Batch.create(
+        [
+          {
+            productId: newCatalogProd._id,
+            batchNumber: "BAT-ZS-2026",
+            manufacturingDate: new Date("2026-01-01"),
+            expiryDate: new Date("2028-01-01"),
+            quantity: 15,
+            purchasePrice: 800,
+            status: "ACTIVE",
+          },
+        ],
+        { session: session5 }
+      );
+
+      // 3. Create Purchase bill linked to new catalogue product
+      await Purchase.create(
+        [
+          {
+            purchaseNumber: "PUR-202611-0004",
+            supplierId: supplierABC._id,
+            supplierSnapshot: {
+              name: supplierABC.name,
+              phone: supplierABC.phone,
+            },
+            supplierInvoiceNumber: "INV-ZINC-889",
+            supplierInvoiceDate: new Date("2026-11-16"),
+            items: [
+              {
+                productId: newCatalogProd._id,
+                isManualProduct: true,
+                saveToCatalogue: true,
+                productSnapshot: {
+                  name: "Zinc Sulphate 25kg",
+                  sku: autoSku,
+                  brand: "Coromandel International",
+                  primaryUnit: "BAGS",
+                },
+                orderedQty: 15,
+                receivedQty: 15,
+                unit: "BAGS",
+                unitPurchasePrice: 800,
+                discountAmount: 0,
+                taxRate: 5,
+                taxAmount: zincCalc.tax,
+                lineTotal: zincCalc.lineTotal,
+                recognizedValue: zincCalc.lineTotal,
+                batches: [{ batchNumber: "BAT-ZS-2026", quantity: 15 }],
+              },
+            ],
+            subtotal: zincCalc.taxable,
+            discountAmount: 0,
+            taxAmount: zincCalc.tax,
+            grandTotal: zincCalc.lineTotal,
+            receivedQty: 15,
+            recognizedInvoiceValue: zincCalc.lineTotal,
+            amountPaid: 0,
+            outstandingAmount: zincCalc.lineTotal,
+            paymentStatus: "UNPAID",
+            status: "RECEIVED",
+            receipts: [
+              {
+                receiptNumber: "REC-PUR-202611-0004-01",
+                receiptDate: new Date(),
+                receivedById: owner._id,
+                receivedByName: owner.name,
+                items: [
+                  {
+                    productId: newCatalogProd._id,
+                    productName: "Zinc Sulphate 25kg",
+                    receivedQty: 15,
+                    recognizedValue: zincCalc.lineTotal,
+                    batches: [{ batchNumber: "BAT-ZS-2026", quantity: 15 }],
+                  },
+                ],
+                totalRecognizedValue: zincCalc.lineTotal,
+              },
+            ],
+            amendments: [],
+            createdById: owner._id,
+          },
+        ],
+        { session: session5 }
+      );
+    });
+    await session5.endSession();
+
+    const createdProductInDb = await Product.findById(catalogProductCreatedId);
+    assert(createdProductInDb !== null, "Product successfully created in catalogue database");
+    assert(createdProductInDb.name === "Zinc Sulphate 25kg", "Product name matches manual entry");
+    assert(createdProductInDb.sku.startsWith("KASI-PRD-"), "Unique collision-proof SKU generated");
+    assert(createdProductInDb.currentStock === 15, "Product currentStock atomically incremented (15)");
+
+    const createdBatchInDb = await Batch.findOne({ productId: catalogProductCreatedId, batchNumber: "BAT-ZS-2026" });
+    assert(createdBatchInDb !== null, "Batch record created in Batch collection");
+    assert(createdBatchInDb.quantity === 15, "Batch quantity matches inwarded quantity (15)");
+
+    console.log("\n----------------------------------------------------------");
+    console.log("TEST 12: PREVENT DUPLICATE CATALOGUE PRODUCT");
+    console.log("----------------------------------------------------------");
+
+    // If another purchase attempts to save "Zinc Sulphate 25kg" with brand "Coromandel International"
+    // Duplicate check must detect existing product and reuse it
+    const duplicateMatch = await Product.findOne({
+      name: { $regex: "^Zinc Sulphate 25kg$", $options: "i" },
+      brand: { $regex: "^Coromandel International$", $options: "i" },
+      status: { $ne: "ARCHIVED" },
+    });
+
+    assert(duplicateMatch !== null, "Duplicate check successfully detected existing catalog product");
+    assert(duplicateMatch._id.toString() === catalogProductCreatedId.toString(), "Reused existing catalog product ID");
+
+    const totalZincProducts = await Product.countDocuments({
+      name: { $regex: "^Zinc Sulphate 25kg$", $options: "i" },
+    });
+    assert(totalZincProducts === 1, "Catalog duplicate prevention ensured only 1 product record exists");
+
+    console.log("\n----------------------------------------------------------");
+    console.log("TEST 13: FINANCIAL CALCULATION PARITY");
+    console.log("----------------------------------------------------------");
+
+    const standardCalc = calculateItemLineValues(50, 250, 500, 18);
+    const manualCalc = calculateItemLineValues(50, 250, 500, 18);
+
+    assert(standardCalc.gross === manualCalc.gross, "Gross amounts are identical (12500 === 12500)");
+    assert(standardCalc.discount === manualCalc.discount, "Discounts are identical (500 === 500)");
+    assert(standardCalc.taxable === manualCalc.taxable, "Taxable amounts are identical (12000 === 12000)");
+    assert(standardCalc.tax === manualCalc.tax, "Tax amounts are identical (2160 === 2160)");
+    assert(standardCalc.lineTotal === manualCalc.lineTotal, "Line totals are identical (14160 === 14160)");
 
     console.log("\n==========================================================");
     console.log(`TEST SUITE RESULTS: ${passed} PASSED | ${failed} FAILED`);

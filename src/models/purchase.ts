@@ -57,7 +57,7 @@ const ProductSnapshotSchema = new Schema(
   {
     name: { type: String, required: true },
     sku: String,
-    brand: { type: String, required: true },
+    brand: { type: String, default: "Generic" },
     primaryUnit: { type: String, required: true },
     barcode: String,
   },
@@ -79,8 +79,16 @@ const PurchaseItemSchema = new Schema(
     productId: {
       type: Schema.Types.ObjectId,
       ref: "Product",
-      required: true,
+      required: false,
       index: true,
+    },
+    isManualProduct: {
+      type: Boolean,
+      default: false,
+    },
+    saveToCatalogue: {
+      type: Boolean,
+      default: false,
     },
     productSnapshot: {
       type: ProductSnapshotSchema,
@@ -145,7 +153,9 @@ const PurchaseItemSchema = new Schema(
 
 const PurchaseReceiptItemSchema = new Schema(
   {
-    productId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+    productId: { type: Schema.Types.ObjectId, ref: "Product", required: false },
+    itemId: { type: Schema.Types.ObjectId, required: false },
+    productName: { type: String },
     receivedQty: { type: Number, required: true },
     recognizedValue: { type: Number, required: true },
     batches: [PurchaseItemBatchSchema],

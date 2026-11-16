@@ -36,6 +36,24 @@ interface ProductOption {
   purchasePrice?: number;
 }
 
+interface CategoryOption {
+  _id: string;
+  name: string;
+}
+
+const PRODUCT_UNITS = [
+  "BAGS",
+  "KG",
+  "G",
+  "L",
+  "ML",
+  "PIECES",
+  "BOXES",
+  "BOTTLES",
+  "CANS",
+  "PACKETS",
+];
+
 interface FormBatch {
   batchNumber: string;
   manufacturingDate?: string;
@@ -45,10 +63,15 @@ interface FormBatch {
 
 interface FormItem {
   id: string; // client-side unique key
+  isManualProduct: boolean;
   productId: string;
   productName: string;
+  brand: string;
   primaryUnit: string;
   sku?: string;
+  saveToCatalogue: boolean;
+  manualSellingPrice?: number;
+  manualCategoryId?: string;
   orderedQty: number;
   unitPurchasePrice: number;
   discountAmount: number;
@@ -66,6 +89,7 @@ export default function NewPurchasePage() {
   // Reference data
   const [suppliers, setSuppliers] = useState<ISupplier[]>([]);
   const [products, setProducts] = useState<ProductOption[]>([]);
+  const [categories, setCategories] = useState<CategoryOption[]>([]);
   const [dataLoading, setDataLoading] = useState(true);
 
   // Form states
@@ -83,10 +107,15 @@ export default function NewPurchasePage() {
   const [items, setItems] = useState<FormItem[]>([
     {
       id: "item-1",
+      isManualProduct: false,
       productId: "",
       productName: "",
-      primaryUnit: "",
+      brand: "",
+      primaryUnit: "BAGS",
       sku: "",
+      saveToCatalogue: false,
+      manualSellingPrice: undefined,
+      manualCategoryId: "",
       orderedQty: 1,
       unitPurchasePrice: 0,
       discountAmount: 0,
@@ -98,14 +127,15 @@ export default function NewPurchasePage() {
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
-  // Fetch active suppliers and products
+  // Fetch active suppliers, products, and categories
   useEffect(() => {
     async function loadData() {
       setDataLoading(true);
       try {
-        const [supRes, prodRes] = await Promise.all([
+        const [supRes, prodRes, catRes] = await Promise.all([
           fetch("/api/suppliers?status=ACTIVE&limit=100"),
           fetch("/api/products?limit=100"),
+          fetch("/api/categories?status=ACTIVE&limit=100"),
         ]);
 
         if (supRes.ok) {
@@ -119,6 +149,13 @@ export default function NewPurchasePage() {
           const prodData = await prodRes.json();
           if (prodData.success && prodData.data?.products) {
             setProducts(prodData.data.products);
+          }
+        }
+
+        if (catRes.ok) {
+          const catData = await catRes.json();
+          if (catData.success && catData.data?.categories) {
+            setCategories(catData.data.categories);
           }
         }
       } catch (err) {
@@ -140,8 +177,10 @@ export default function NewPurchasePage() {
         if (item.id === itemId) {
           return {
             ...item,
+            isManualProduct: false,
             productId,
             productName: prod?.name || "",
+            brand: prod?.brand || "",
             primaryUnit: prod?.primaryUnit || "",
             sku: prod?.sku || "",
             unitPurchasePrice: prod?.purchasePrice || item.unitPurchasePrice || 0,
@@ -175,10 +214,15 @@ export default function NewPurchasePage() {
       ...prev,
       {
         id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+        isManualProduct: false,
         productId: "",
         productName: "",
-        primaryUnit: "",
+        brand: "",
+        primaryUnit: "BAGS",
         sku: "",
+        saveToCatalogue: false,
+        manualSellingPrice: undefined,
+        manualCategoryId: "",
         orderedQty: 1,
         unitPurchasePrice: 0,
         discountAmount: 0,
@@ -288,10 +332,18 @@ export default function NewPurchasePage() {
     // Validate items & batches
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
-      if (!it.productId) {
-        setErrorMessage(`Please select a product for line #${i + 1}.`);
-        return;
+      if (it.isManualProduct) {
+        if (!it.productName.trim() || it.productName.trim().length < 2) {
+          setErrorMessage(`Product name for manual line #${i + 1} must be at least 2 characters.`);
+          return;
+        }
+      } else {
+        if (!it.productId) {
+          setErrorMessage(`Please select a product for line #${i + 1}.`);
+          return;
+        }
       }
+
       if (it.orderedQty <= 0) {
         setErrorMessage(`Quantity for line #${i + 1} must be greater than 0.`);
         return;
@@ -325,7 +377,7 @@ export default function NewPurchasePage() {
 
         if (round2(batchTotal) !== round2(it.orderedQty)) {
           setErrorMessage(
-            `Sum of batch quantities (${batchTotal}) must equal total line quantity (${it.orderedQty}) for product '${it.productName}'.`
+            `Sum of batch quantities (${batchTotal}) must equal total line quantity (${it.orderedQty}) for product '${it.productName || `Line #${i + 1}`}'.`
           );
           return;
         }
@@ -344,7 +396,14 @@ export default function NewPurchasePage() {
         receiveNow,
         notes: notes.trim() || undefined,
         items: items.map((it) => ({
-          productId: it.productId,
+          productId: it.isManualProduct ? undefined : it.productId,
+          isManualProduct: it.isManualProduct,
+          manualProductName: it.isManualProduct ? it.productName.trim() : undefined,
+          manualBrand: it.isManualProduct ? it.brand.trim() || undefined : undefined,
+          manualUnit: it.isManualProduct ? it.primaryUnit || "BAGS" : undefined,
+          manualSellingPrice: it.isManualProduct && it.manualSellingPrice ? Number(it.manualSellingPrice) : undefined,
+          manualCategoryId: it.isManualProduct && it.manualCategoryId ? it.manualCategoryId : undefined,
+          saveToCatalogue: Boolean(it.isManualProduct && it.saveToCatalogue),
           orderedQty: Number(it.orderedQty),
           unitPurchasePrice: Number(it.unitPurchasePrice),
           discountAmount: Number(it.discountAmount || 0),
@@ -593,7 +652,7 @@ export default function NewPurchasePage() {
                 key={item.id}
                 className="p-4 rounded-xl border border-slate-200/90 bg-slate-50/50 space-y-4 relative"
               >
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 pb-3">
                   <div className="flex items-center gap-2">
                     <span className="w-6 h-6 rounded-full bg-emerald-100 text-[#176B3A] text-xs font-bold flex items-center justify-center">
                       {index + 1}
@@ -601,45 +660,134 @@ export default function NewPurchasePage() {
                     <span className="text-xs font-semibold text-slate-800">
                       Product #{index + 1}
                     </span>
-                    {item.primaryUnit && (
+                    {item.isManualProduct ? (
+                      <Badge variant={item.saveToCatalogue ? "agri" : "warning"} size="sm">
+                        {item.saveToCatalogue ? "New: Save to Catalogue" : "New: Purchase Only"}
+                      </Badge>
+                    ) : item.primaryUnit ? (
                       <Badge variant="neutral" size="sm">
                         Unit: {item.primaryUnit}
                       </Badge>
-                    )}
+                    ) : null}
                   </div>
 
-                  {items.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveItem(item.id)}
-                      className="text-slate-400 hover:text-rose-600 transition-colors p-1"
-                      title="Remove Item"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {/* Toggle: Catalog vs Manual Entry */}
+                    <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleItemChange(item.id, "isManualProduct", false);
+                          handleItemChange(item.id, "saveToCatalogue", false);
+                        }}
+                        className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                          !item.isManualProduct
+                            ? "bg-white text-slate-900 shadow-sm"
+                            : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        Select from Catalogue
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleItemChange(item.id, "isManualProduct", true);
+                          handleItemChange(item.id, "productId", "");
+                          if (!item.primaryUnit) handleItemChange(item.id, "primaryUnit", "BAGS");
+                        }}
+                        className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                          item.isManualProduct
+                            ? "bg-emerald-700 text-white shadow-sm"
+                            : "text-slate-600 hover:text-slate-900"
+                        }`}
+                      >
+                        + Enter New Product
+                      </button>
+                    </div>
+
+                    {items.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveItem(item.id)}
+                        className="text-slate-400 hover:text-rose-600 transition-colors p-1"
+                        title="Remove Item"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Main Product Inputs */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
                   <div className="sm:col-span-2">
-                    <label htmlFor={`prod-sel-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                      Product *
-                    </label>
-                    <select
-                      id={`prod-sel-${item.id}`}
-                      value={item.productId}
-                      onChange={(e) => handleProductChange(item.id, e.target.value)}
-                      aria-label="Select Product"
-                      className="w-full h-9 px-3 rounded-lg border border-slate-200 bg-white text-xs sm:text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
-                    >
-                      <option value="">-- Choose Product --</option>
-                      {products.map((p) => (
-                        <option key={p._id} value={p._id}>
-                          {p.name} ({p.brand}) {p.sku ? `[${p.sku}]` : ""} - {p.primaryUnit}
-                        </option>
-                      ))}
-                    </select>
+                    {!item.isManualProduct ? (
+                      <div>
+                        <label htmlFor={`prod-sel-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
+                          Product *
+                        </label>
+                        <select
+                          id={`prod-sel-${item.id}`}
+                          value={item.productId}
+                          onChange={(e) => handleProductChange(item.id, e.target.value)}
+                          aria-label="Select Product"
+                          className="w-full h-9 px-3 rounded-lg border border-slate-200 bg-white text-xs sm:text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
+                        >
+                          <option value="">-- Choose Product --</option>
+                          {products.map((p) => (
+                            <option key={p._id} value={p._id}>
+                              {p.name} ({p.brand}) {p.sku ? `[${p.sku}]` : ""} - {p.primaryUnit}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <div>
+                          <label htmlFor={`prod-name-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
+                            Product Name *
+                          </label>
+                          <Input
+                            id={`prod-name-${item.id}`}
+                            placeholder="e.g. Tata Rallis Panida 1L"
+                            value={item.productName}
+                            onChange={(e) => handleItemChange(item.id, "productName", e.target.value)}
+                            className="h-9 bg-white text-xs sm:text-sm font-medium"
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label htmlFor={`prod-brand-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
+                              Brand (Optional)
+                            </label>
+                            <Input
+                              id={`prod-brand-${item.id}`}
+                              placeholder="e.g. Tata Rallis"
+                              value={item.brand}
+                              onChange={(e) => handleItemChange(item.id, "brand", e.target.value)}
+                              className="h-8 bg-white text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label htmlFor={`prod-unit-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
+                              Unit *
+                            </label>
+                            <select
+                              id={`prod-unit-${item.id}`}
+                              value={item.primaryUnit || "BAGS"}
+                              onChange={(e) => handleItemChange(item.id, "primaryUnit", e.target.value)}
+                              className="w-full h-8 px-2 rounded-lg border border-slate-200 bg-white text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
+                            >
+                              {PRODUCT_UNITS.map((u) => (
+                                <option key={u} value={u}>
+                                  {u}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -722,6 +870,76 @@ export default function NewPurchasePage() {
                     </select>
                   </div>
                 </div>
+
+                {/* Catalogue Integration Panel (Only for manually entered products) */}
+                {item.isManualProduct && (
+                  <div className="p-3 bg-white rounded-lg border border-slate-200/90 text-xs space-y-2">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <label className="flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={item.saveToCatalogue}
+                          onChange={(e) =>
+                            handleItemChange(item.id, "saveToCatalogue", e.target.checked)
+                          }
+                          className="w-4 h-4 text-[#176B3A] rounded border-slate-300 focus:ring-[#176B3A]"
+                        />
+                        <span className="font-semibold text-slate-800">
+                          Save to Product Catalogue
+                        </span>
+                      </label>
+                      <span className="text-[11px] text-slate-500">
+                        {item.saveToCatalogue
+                          ? "✓ Permanent catalogue item: auto-generates SKU, tracks inventory and enables future sales"
+                          : "Purchase-only item: recorded on invoice without adding to catalog inventory"}
+                      </span>
+                    </div>
+
+                    {item.saveToCatalogue && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                            Category (Optional)
+                          </label>
+                          <select
+                            value={item.manualCategoryId || ""}
+                            onChange={(e) =>
+                              handleItemChange(item.id, "manualCategoryId", e.target.value)
+                            }
+                            className="w-full h-8 px-2 rounded border border-slate-200 bg-white text-xs text-slate-800"
+                          >
+                            <option value="">-- Auto-Assign / General --</option>
+                            {categories.map((c) => (
+                              <option key={c._id} value={c._id}>
+                                {c.name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                            Selling Price (₹) — Optional
+                          </label>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            placeholder={`Defaults to cost price (₹${item.unitPurchasePrice || 0})`}
+                            value={item.manualSellingPrice || ""}
+                            onChange={(e) =>
+                              handleItemChange(
+                                item.id,
+                                "manualSellingPrice",
+                                parseFloat(e.target.value) || undefined
+                              )
+                            }
+                            className="h-8 text-xs bg-white"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Multi-Batch Details Subsection */}
                 <div className="p-3 bg-white rounded-lg border border-slate-200/80 space-y-2">
