@@ -77,6 +77,18 @@ export async function connectDB(): Promise<typeof mongoose> {
 
   try {
     cached.conn = await cached.promise;
+    
+    // Strict Staging Isolation Guard: Ensure active database is strictly 'kasi_staging' when APP_ENV=staging
+    const isStaging = process.env.APP_ENV === "staging";
+    const currentDb = mongoose.connection.db?.databaseName;
+    if (isStaging && currentDb !== "kasi_staging") {
+      await mongoose.disconnect();
+      cached.conn = null;
+      cached.promise = null;
+      throw new Error(
+        `FATAL DATABASE GUARD: Staging environment attempted connection to '${currentDb}' instead of 'kasi_staging'. Connection immediately terminated.`
+      );
+    }
   } catch (error) {
     cached.promise = null;
     throw error;

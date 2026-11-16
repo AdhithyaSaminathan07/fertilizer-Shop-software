@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:staging": "node --env-file=.env.staging ./node_modules/next/dist/bin/next dev",
+    "db:reset:staging": "node scripts/reset-staging.mjs",
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint .",

@@ -25,6 +25,8 @@ yarn-error.log*
 
 # environment files
 .env
+.env.staging
+.env*.staging
 .env*.local
 .env.local
 .env.development.local
