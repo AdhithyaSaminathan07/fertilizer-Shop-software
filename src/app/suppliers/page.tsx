@@ -308,66 +308,76 @@ export default function SuppliersPage() {
         </div>
       </div>
 
-      {/* KPI Metric Summary Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      {/* KPI Metric Summary Cards - Responsive 2-column on mobile, 3-column on tablet/desktop */}
+      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-4 lg:grid-cols-3">
+        {/* Card 1: Active Suppliers */}
         <Card className="border-slate-200/80 bg-white shadow-xs">
-          <CardContent className="p-4 sm:p-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+          <CardContent className="flex h-full flex-col justify-between p-3 sm:p-5">
+            <div>
+              <div className="flex items-start justify-between gap-1.5 sm:items-center">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 sm:text-xs">
                   Active Suppliers
                 </p>
-                <p className="mt-1 text-2xl font-bold text-slate-900">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700 sm:h-11 sm:w-11 sm:rounded-xl">
+                  <Truck className="h-3.5 w-3.5 sm:h-6 sm:w-6" />
+                </div>
+              </div>
+              <div className="mt-1 sm:mt-1.5">
+                <p className="text-lg font-bold text-slate-900 sm:text-2xl">
                   {stats.activeSuppliers}
                 </p>
               </div>
-              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-50 text-emerald-700">
-                <Truck className="h-6 w-6" />
-              </div>
             </div>
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-1.5 text-[10px] text-slate-500 sm:mt-2 sm:text-xs">
               Total registered: <span className="font-semibold text-slate-700">{stats.totalSuppliers}</span>
             </p>
           </CardContent>
         </Card>
 
+        {/* Card 2: Total Outstanding Balance */}
         <Card className="border-slate-200/80 bg-white shadow-xs">
-          <CardContent className="p-4 sm:p-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
-                  Total Outstanding Balance
+          <CardContent className="flex h-full flex-col justify-between p-3 sm:p-5">
+            <div>
+              <div className="flex items-start justify-between gap-1.5 sm:items-center">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 sm:text-xs">
+                  Total Outstanding
                 </p>
-                <p className="mt-1 text-2xl font-bold text-amber-700">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-700 sm:h-11 sm:w-11 sm:rounded-xl">
+                  <Building2 className="h-3.5 w-3.5 sm:h-6 sm:w-6" />
+                </div>
+              </div>
+              <div className="mt-1 sm:mt-1.5">
+                <p className="truncate text-base font-bold text-amber-700 sm:text-2xl">
                   {formatCurrency(stats.totalOutstanding)}
                 </p>
               </div>
-              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-50 text-amber-700">
-                <Building2 className="h-6 w-6" />
-              </div>
             </div>
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-1.5 line-clamp-1 text-[10px] text-slate-500 sm:mt-2 sm:line-clamp-none sm:text-xs">
               Recognized payable balances against confirmed GRNs
             </p>
           </CardContent>
         </Card>
 
+        {/* Card 3: GST Compliance (occupies col 1 of row 2 on mobile) */}
         <Card className="border-slate-200/80 bg-white shadow-xs">
-          <CardContent className="p-4 sm:p-5">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs font-medium uppercase tracking-wider text-slate-500">
+          <CardContent className="flex h-full flex-col justify-between p-3 sm:p-5">
+            <div>
+              <div className="flex items-start justify-between gap-1.5 sm:items-center">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 sm:text-xs">
                   GST Compliance
                 </p>
-                <p className="mt-1 text-2xl font-bold text-slate-900">
-                  {suppliers.filter((s) => s.gstin).length} <span className="text-sm font-normal text-slate-500">with GSTIN</span>
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-700 sm:h-11 sm:w-11 sm:rounded-xl">
+                  <ShieldCheck className="h-3.5 w-3.5 sm:h-6 sm:w-6" />
+                </div>
+              </div>
+              <div className="mt-1 sm:mt-1.5">
+                <p className="text-lg font-bold text-slate-900 sm:text-2xl">
+                  {suppliers.filter((s) => s.gstin).length}{" "}
+                  <span className="text-xs font-normal text-slate-500 sm:text-sm">with GSTIN</span>
                 </p>
               </div>
-              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-slate-100 text-slate-700">
-                <ShieldCheck className="h-6 w-6" />
-              </div>
             </div>
-            <p className="mt-2 text-xs text-slate-500">
+            <p className="mt-1.5 text-[10px] text-slate-500 sm:mt-2 sm:text-xs">
               Tax-compliant verified vendors
             </p>
           </CardContent>
