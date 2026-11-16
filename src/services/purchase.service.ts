@@ -521,6 +521,8 @@ export async function createPurchase(
         totalTax,
         grandTotal,
         amountPaid,
+        paymentMethod: input.paymentMethod || undefined,
+        paymentReference: input.paymentReference?.trim() || undefined,
         notes: input.notes?.trim(),
       },
       actor
@@ -545,6 +547,8 @@ export async function createPurchase(
     receivedQty: 0,
     recognizedInvoiceValue: 0,
     amountPaid,
+    paymentMethod: input.paymentMethod || undefined,
+    paymentReference: input.paymentReference?.trim() || undefined,
     outstandingAmount: 0, // Zero financial liability recognized until goods are inwarded!
     paymentStatus: amountPaid > 0 ? "PARTIALLY_PAID" : "UNPAID",
     status: initialStatus,
@@ -592,6 +596,8 @@ async function createAndInwardPurchaseAtomic(
     totalTax: number;
     grandTotal: number;
     amountPaid: number;
+    paymentMethod?: string;
+    paymentReference?: string;
     notes?: string;
   },
   actor: ActorContext
@@ -768,6 +774,8 @@ async function createAndInwardPurchaseAtomic(
             receivedQty: totalReceivedQty,
             recognizedInvoiceValue: params.grandTotal,
             amountPaid: params.amountPaid,
+            paymentMethod: params.paymentMethod,
+            paymentReference: params.paymentReference,
             outstandingAmount,
             paymentStatus,
             status: "RECEIVED",
@@ -1011,13 +1019,20 @@ export async function confirmPurchaseInward(
       purchase.updatedById = new mongoose.Types.ObjectId(actor.id);
       await purchase.save({ session });
 
-      // 3. Increment Supplier Financial Ledger atomically
+      // 3. Increment Supplier Financial Ledger atomically with proportional advance absorption
+      const priorRecognized = round2(purchase.recognizedInvoiceValue - totalNewlyRecognizedValue);
+      const priorAppliedAdvance = Math.min(purchase.amountPaid, priorRecognized);
+      const newAppliedAdvance = Math.min(purchase.amountPaid, purchase.recognizedInvoiceValue);
+      const newlyAppliedAdvance = round2(newAppliedAdvance - priorAppliedAdvance);
+      const supplierOutstandingIncrement = round2(totalNewlyRecognizedValue - newlyAppliedAdvance);
+
       await Supplier.findByIdAndUpdate(
         purchase.supplierId,
         {
           $inc: {
             totalPurchases: totalNewlyRecognizedValue,
-            outstandingBalance: totalNewlyRecognizedValue,
+            totalPaid: newlyAppliedAdvance,
+            outstandingBalance: supplierOutstandingIncrement,
           },
         },
         { session }

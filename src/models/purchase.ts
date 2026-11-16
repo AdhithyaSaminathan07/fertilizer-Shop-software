@@ -24,6 +24,8 @@ export interface IPurchaseDocument extends Document {
   receivedQty: number;
   recognizedInvoiceValue: number;
   amountPaid: number;
+  paymentMethod?: string;
+  paymentReference?: string;
   outstandingAmount: number;
   paymentStatus: PurchasePaymentStatus;
   status: PurchaseStatus;
@@ -267,6 +269,17 @@ const PurchaseSchema = new Schema<IPurchaseDocument>(
       type: Number,
       default: 0,
       min: [0, "Amount paid cannot be negative"],
+    },
+    paymentMethod: {
+      type: String,
+      enum: ["CASH", "UPI", "BANK_TRANSFER", "CHEQUE"],
+      required: false,
+    },
+    paymentReference: {
+      type: String,
+      trim: true,
+      maxlength: 100,
+      required: false,
     },
     outstandingAmount: {
       type: Number,

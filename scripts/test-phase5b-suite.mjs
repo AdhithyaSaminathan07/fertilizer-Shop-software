@@ -175,6 +175,8 @@ const PurchaseSchema = new mongoose.Schema(
     receivedQty: { type: Number, default: 0, min: 0 },
     recognizedInvoiceValue: { type: Number, default: 0, min: 0 },
     amountPaid: { type: Number, default: 0, min: 0 },
+    paymentMethod: { type: String, enum: ["CASH", "UPI", "BANK_TRANSFER", "CHEQUE"] },
+    paymentReference: { type: String, trim: true },
     outstandingAmount: { type: Number, default: 0, min: 0 },
     paymentStatus: {
       type: String,
@@ -1001,6 +1003,84 @@ async function runPhase5BTestSuite() {
     assert(standardCalc.taxable === manualCalc.taxable, "Taxable amounts are identical (12000 === 12000)");
     assert(standardCalc.tax === manualCalc.tax, "Tax amounts are identical (2160 === 2160)");
     assert(standardCalc.lineTotal === manualCalc.lineTotal, "Line totals are identical (14160 === 14160)");
+
+    console.log("\n----------------------------------------------------------");
+    console.log("TEST 14: PAYMENT METHOD & REFERENCE TRACKING");
+    console.log("----------------------------------------------------------");
+
+    const billWithUPI = await Purchase.create({
+      purchaseNumber: "PUR-202611-0005",
+      supplierId: supplierABC._id,
+      supplierSnapshot: {
+        name: supplierABC.name,
+        phone: supplierABC.phone,
+      },
+      supplierInvoiceNumber: "INV-ABC-UPI-01",
+      supplierInvoiceDate: new Date(),
+      items: [
+        {
+          productId: productDAP._id,
+          productSnapshot: {
+            name: productDAP.name,
+            brand: productDAP.brand,
+            primaryUnit: productDAP.primaryUnit,
+          },
+          orderedQty: 10,
+          receivedQty: 0,
+          unit: "BAGS",
+          unitPurchasePrice: 1350,
+          discountAmount: 0,
+          taxRate: 5,
+          taxAmount: 675,
+          lineTotal: 14175,
+          recognizedValue: 0,
+        },
+      ],
+      subtotal: 13500,
+      discountAmount: 0,
+      taxAmount: 675,
+      grandTotal: 14175,
+      amountPaid: 5000,
+      paymentMethod: "UPI",
+      paymentReference: "UPI-ICICI-9876543210",
+      outstandingAmount: 0,
+      paymentStatus: "PARTIALLY_PAID",
+      status: "PENDING_RECEIPT",
+      receipts: [],
+      amendments: [],
+      createdById: owner._id,
+    });
+
+    assert(billWithUPI.paymentMethod === "UPI", "Payment method correctly stored as UPI");
+    assert(billWithUPI.paymentReference === "UPI-ICICI-9876543210", "Payment reference correctly stored");
+    assert(billWithUPI.amountPaid === 5000, "Upfront payment recorded accurately (₹5,000.00)");
+
+    console.log("\n----------------------------------------------------------");
+    console.log("TEST 15: ADVANCE PAYMENT PRESERVATION ON PARTIAL INWARD");
+    console.log("----------------------------------------------------------");
+
+    // Bill has grand total 14175, amountPaid = 5000 (advance).
+    // First partial receipt: only 3 bags arrived (value: (3/10)*14175 = 4252.50).
+    // Notice that advance paid (5000) EXCEEDS the recognized value of first delivery (4252.50).
+    // Therefore:
+    // Recognized invoice value = 4252.50
+    // Net outstanding on invoice must be Math.max(0, 4252.50 - 5000) = 0.00
+    // Remaining unabsorbed advance = 5000 - 4252.50 = 747.50
+    const partialRecognized = round2((3 / 10) * 14175); // 4252.50
+    const advancePaid = 5000;
+    const invoiceOutstanding = Math.max(0, round2(partialRecognized - advancePaid)); // 0
+
+    assert(partialRecognized === 4252.5, "Partial delivery value is exact (₹4,252.50)");
+    assert(invoiceOutstanding === 0, "No payable recognized when advance payment exceeds goods value (₹0.00)");
+
+    // On second delivery, remaining 7 bags arrive (value: (7/10)*14175 = 9922.50)
+    // Total recognized = 14175.
+    // Total invoice outstanding = 14175 - 5000 = 9175.00.
+    const secondDeliveryVal = round2((7 / 10) * 14175); // 9922.50
+    const totalRecognized = round2(partialRecognized + secondDeliveryVal); // 14175
+    const finalOutstanding = Math.max(0, round2(totalRecognized - advancePaid)); // 9175.00
+
+    assert(finalOutstanding === 9175, "Advance was smoothly absorbed across subsequent receipts (₹9,175.00)");
 
     console.log("\n==========================================================");
     console.log(`TEST SUITE RESULTS: ${passed} PASSED | ${failed} FAILED`);

@@ -106,6 +106,8 @@ export interface IPurchase {
   receivedQty: number;
   recognizedInvoiceValue: number; // Sum of recognized value for received items
   amountPaid: number; // Upfront payment recorded on invoice
+  paymentMethod?: "CASH" | "UPI" | "BANK_TRANSFER" | "CHEQUE";
+  paymentReference?: string;
   outstandingAmount: number; // Math.max(0, recognizedInvoiceValue - amountPaid)
   paymentStatus: PurchasePaymentStatus;
   status: PurchaseStatus;

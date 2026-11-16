@@ -644,6 +644,15 @@ export default function PurchaseDetailPage({ params }: PageProps) {
               </span>
             </div>
 
+            {purchase.paymentMethod && (
+              <div className="flex items-center justify-between text-[11px] text-slate-500">
+                <span>Payment Mode:</span>
+                <span className="font-medium text-slate-700">
+                  {purchase.paymentMethod} {purchase.paymentReference ? `(${purchase.paymentReference})` : ""}
+                </span>
+              </div>
+            )}
+
             <div className="pt-3 border-t border-slate-200 flex items-center justify-between">
               <span className="text-sm font-bold text-slate-900">Net Outstanding:</span>
               <span className="text-xl font-bold text-amber-700">

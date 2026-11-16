@@ -11,15 +11,12 @@ import {
   Building2,
   FileText,
   AlertCircle,
-  Save,
   CheckCircle2,
-  Calendar,
   Layers,
-  Sparkles,
   CreditCard,
-  Truck,
   Box,
   Clock,
+  Check,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,6 +31,11 @@ interface ProductOption {
   brand: string;
   primaryUnit: string;
   purchasePrice?: number;
+  unitConversion?: {
+    enabled: boolean;
+    baseUnit: string;
+    conversionRatio: number;
+  };
 }
 
 interface CategoryOption {
@@ -102,6 +104,8 @@ export default function NewPurchasePage() {
     new Date().toISOString().split("T")[0]
   );
   const [amountPaid, setAmountPaid] = useState<number>(0);
+  const [paymentMethod, setPaymentMethod] = useState<"CASH" | "UPI" | "BANK_TRANSFER" | "CHEQUE">("CASH");
+  const [paymentReference, setPaymentReference] = useState("");
   const [notes, setNotes] = useState("");
 
   const [items, setItems] = useState<FormItem[]>([
@@ -133,10 +137,15 @@ export default function NewPurchasePage() {
       setDataLoading(true);
       try {
         const [supRes, prodRes, catRes] = await Promise.all([
-          fetch("/api/suppliers?status=ACTIVE&limit=100"),
-          fetch("/api/products?limit=100"),
-          fetch("/api/categories?status=ACTIVE&limit=100"),
+          fetch("/api/suppliers?status=ACTIVE&limit=100", { credentials: "same-origin" }),
+          fetch("/api/products?limit=100", { credentials: "same-origin" }),
+          fetch("/api/categories?status=ACTIVE&limit=100", { credentials: "same-origin" }),
         ]);
+
+        if (supRes.status === 401 || prodRes.status === 401) {
+          setErrorMessage("Your session is unauthenticated. Please sign in to record purchases.");
+          return;
+        }
 
         if (supRes.ok) {
           const supData = await supRes.json();
@@ -147,8 +156,10 @@ export default function NewPurchasePage() {
 
         if (prodRes.ok) {
           const prodData = await prodRes.json();
-          if (prodData.success && prodData.data?.products) {
-            setProducts(prodData.data.products);
+          if (prodData.success) {
+            // Robust fallback: matches both data.items (standard) and data.products
+            const loadedProducts = prodData.data?.items || prodData.data?.products || [];
+            setProducts(loadedProducts);
           }
         }
 
@@ -175,15 +186,25 @@ export default function NewPurchasePage() {
     setItems((prev) =>
       prev.map((item) => {
         if (item.id === itemId) {
+          const newPrice =
+            typeof prod?.purchasePrice === "number" && prod.purchasePrice > 0
+              ? prod.purchasePrice
+              : item.unitPurchasePrice || 0;
+
           return {
             ...item,
             isManualProduct: false,
             productId,
             productName: prod?.name || "",
             brand: prod?.brand || "",
-            primaryUnit: prod?.primaryUnit || "",
+            primaryUnit: prod?.primaryUnit || "BAGS",
             sku: prod?.sku || "",
-            unitPurchasePrice: prod?.purchasePrice || item.unitPurchasePrice || 0,
+            unitPurchasePrice: newPrice,
+            // If there's only 1 batch, keep its quantity aligned with orderedQty
+            batches:
+              item.batches.length === 1
+                ? [{ ...item.batches[0], quantity: item.orderedQty }]
+                : item.batches,
           };
         }
         return item;
@@ -199,6 +220,17 @@ export default function NewPurchasePage() {
     setItems((prev) =>
       prev.map((item) => {
         if (item.id === itemId) {
+          // When orderedQty changes and there is only 1 batch, automatically sync batch quantity
+          if (field === "orderedQty") {
+            const newQty = parseFloat(value) || 0;
+            if (item.batches.length === 1) {
+              return {
+                ...item,
+                orderedQty: newQty,
+                batches: [{ ...item.batches[0], quantity: newQty }],
+              };
+            }
+          }
           return {
             ...item,
             [field]: value,
@@ -242,11 +274,15 @@ export default function NewPurchasePage() {
     setItems((prev) =>
       prev.map((item) => {
         if (item.id === itemId) {
+          const allocated = item.batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0);
+          const remaining = Math.max(0, round2(item.orderedQty - allocated));
+          const nextQty = remaining > 0 ? remaining : 1;
+
           return {
             ...item,
             batches: [
               ...item.batches,
-              { batchNumber: "", quantity: 1 },
+              { batchNumber: "", quantity: nextQty },
             ],
           };
         }
@@ -300,12 +336,13 @@ export default function NewPurchasePage() {
 
   const totals = itemCalculations.reduce(
     (acc, cur) => ({
+      gross: round2(acc.gross + cur.gross),
       taxable: round2(acc.taxable + cur.taxable),
       discount: round2(acc.discount + cur.discount),
       tax: round2(acc.tax + cur.tax),
       grandTotal: round2(acc.grandTotal + cur.lineTotal),
     }),
-    { taxable: 0, discount: 0, tax: 0, grandTotal: 0 }
+    { gross: 0, taxable: 0, discount: 0, tax: 0, grandTotal: 0 }
   );
 
   const outstanding = Math.max(0, round2(totals.grandTotal - (amountPaid || 0)));
@@ -339,7 +376,7 @@ export default function NewPurchasePage() {
         }
       } else {
         if (!it.productId) {
-          setErrorMessage(`Please select a product for line #${i + 1}.`);
+          setErrorMessage(`Please select a catalogue product for line #${i + 1}.`);
           return;
         }
       }
@@ -348,33 +385,68 @@ export default function NewPurchasePage() {
         setErrorMessage(`Quantity for line #${i + 1} must be greater than 0.`);
         return;
       }
+
       if (it.unitPurchasePrice < 0) {
         setErrorMessage(`Unit price for line #${i + 1} cannot be negative.`);
         return;
       }
 
-      // If immediate inward, batches are required with batchNumber
+      // Batch validation
+      const hasAnyBatchNumber = it.batches.some((b) => b.batchNumber.trim() !== "");
+
+      // If immediate inward is selected, batch numbers and exact quantity matching are mandatory
       if (receiveNow) {
         let batchTotal = 0;
         for (let bIdx = 0; bIdx < it.batches.length; bIdx++) {
           const b = it.batches[bIdx];
           if (!b.batchNumber.trim()) {
-            setErrorMessage(`Batch number is required for line #${i + 1}, batch #${bIdx + 1} when confirming inward stock.`);
+            setErrorMessage(
+              `Batch number is required for line #${i + 1}, batch #${bIdx + 1} when confirming immediate stock inward.`
+            );
             return;
           }
           if (b.quantity <= 0) {
-            setErrorMessage(`Batch quantity must be greater than 0 on line #${i + 1}.`);
+            setErrorMessage(`Batch quantity must be greater than 0 on line #${i + 1}, batch #${bIdx + 1}.`);
             return;
           }
           if (b.manufacturingDate && b.expiryDate) {
             if (new Date(b.manufacturingDate) > new Date(b.expiryDate)) {
-              setErrorMessage(`Expiry date must be after manufacturing date on line #${i + 1}, batch ${b.batchNumber}.`);
+              setErrorMessage(
+                `Expiry date must be on or after manufacturing date on line #${i + 1}, batch '${b.batchNumber}'.`
+              );
               return;
             }
           }
-          batchTotal += b.quantity;
+          batchTotal = round2(batchTotal + b.quantity);
         }
 
+        if (round2(batchTotal) !== round2(it.orderedQty)) {
+          setErrorMessage(
+            `Sum of batch quantities (${batchTotal}) must exactly equal total line quantity (${it.orderedQty}) for product '${it.productName || `Line #${i + 1}`}'.`
+          );
+          return;
+        }
+      } else if (hasAnyBatchNumber) {
+        // If not receiveNow but user entered batch details, validate consistency
+        let batchTotal = 0;
+        for (let bIdx = 0; bIdx < it.batches.length; bIdx++) {
+          const b = it.batches[bIdx];
+          if (b.batchNumber.trim()) {
+            if (b.quantity <= 0) {
+              setErrorMessage(`Batch quantity must be greater than 0 for batch '${b.batchNumber}' on line #${i + 1}.`);
+              return;
+            }
+            if (b.manufacturingDate && b.expiryDate) {
+              if (new Date(b.manufacturingDate) > new Date(b.expiryDate)) {
+                setErrorMessage(
+                  `Expiry date must be on or after manufacturing date on line #${i + 1}, batch '${b.batchNumber}'.`
+                );
+                return;
+              }
+            }
+            batchTotal = round2(batchTotal + b.quantity);
+          }
+        }
         if (round2(batchTotal) !== round2(it.orderedQty)) {
           setErrorMessage(
             `Sum of batch quantities (${batchTotal}) must equal total line quantity (${it.orderedQty}) for product '${it.productName || `Line #${i + 1}`}'.`
@@ -393,6 +465,8 @@ export default function NewPurchasePage() {
         purchaseDate: purchaseDate ? new Date(purchaseDate).toISOString() : undefined,
         status: receiveNow ? "RECEIVED" : "PENDING_RECEIPT",
         amountPaid: Number(amountPaid || 0),
+        paymentMethod: amountPaid > 0 ? paymentMethod : undefined,
+        paymentReference: amountPaid > 0 && paymentReference.trim() ? paymentReference.trim() : undefined,
         receiveNow,
         notes: notes.trim() || undefined,
         items: items.map((it) => ({
@@ -453,7 +527,7 @@ export default function NewPurchasePage() {
             </Button>
           </Link>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
+            <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
               Record Inward Purchase Bill
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
@@ -462,13 +536,14 @@ export default function NewPurchasePage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
           <Button
             variant="outline"
             size="sm"
             disabled={submitting}
             onClick={() => handleSubmit(false)}
             leftIcon={<Clock className="w-4 h-4" />}
+            className="w-full sm:w-auto"
           >
             Save (Pending Goods)
           </Button>
@@ -478,6 +553,7 @@ export default function NewPurchasePage() {
             loading={submitting}
             onClick={() => handleSubmit(true)}
             leftIcon={<CheckCircle2 className="w-4 h-4" />}
+            className="w-full sm:w-auto"
           >
             Confirm & Inward Stock Now
           </Button>
@@ -525,7 +601,7 @@ export default function NewPurchasePage() {
                 aria-label="Select Supplier"
                 className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A] focus:border-transparent"
               >
-                <option value="">-- Choose a Supplier --</option>
+                <option value="">-- Choose a Registered Supplier --</option>
                 {suppliers.map((s) => {
                   const sId = s.id || s._id;
                   return (
@@ -546,7 +622,7 @@ export default function NewPurchasePage() {
                   </span>
                   <Badge variant="agri" size="sm">ACTIVE</Badge>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-slate-600 pt-1">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-slate-600 pt-1">
                   <div>
                     <span className="text-slate-400 block text-[11px]">Contact Person:</span>
                     <span className="font-medium text-slate-800">
@@ -623,7 +699,7 @@ export default function NewPurchasePage() {
 
       {/* Section 2: Line Items & Multiple Batches */}
       <Card className="border border-slate-200/80 shadow-sm p-4 sm:p-5">
-        <CardHeader className="p-0 pb-4 border-b border-slate-100 flex-row items-center justify-between">
+        <CardHeader className="p-0 pb-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <CardTitle className="text-base font-semibold text-slate-900 flex items-center gap-2">
               <Layers className="w-4 h-4 text-[#176B3A]" />
@@ -646,6 +722,10 @@ export default function NewPurchasePage() {
         <CardContent className="p-0 pt-4 space-y-6">
           {items.map((item, index) => {
             const calc = itemCalculations[index];
+            const selectedProd = products.find((p) => p._id === item.productId);
+            const batchSum = item.batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0);
+            const isBatchFullyAllocated = round2(batchSum) === round2(item.orderedQty);
+            const isBatchOverAllocated = round2(batchSum) > round2(item.orderedQty);
 
             return (
               <div
@@ -653,7 +733,7 @@ export default function NewPurchasePage() {
                 className="p-4 rounded-xl border border-slate-200/90 bg-slate-50/50 space-y-4 relative"
               >
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 pb-3">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="w-6 h-6 rounded-full bg-emerald-100 text-[#176B3A] text-xs font-bold flex items-center justify-center">
                       {index + 1}
                     </span>
@@ -665,9 +745,16 @@ export default function NewPurchasePage() {
                         {item.saveToCatalogue ? "New: Save to Catalogue" : "New: Purchase Only"}
                       </Badge>
                     ) : item.primaryUnit ? (
-                      <Badge variant="neutral" size="sm">
-                        Unit: {item.primaryUnit}
-                      </Badge>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <Badge variant="neutral" size="sm">
+                          Unit: {item.primaryUnit}
+                        </Badge>
+                        {selectedProd?.unitConversion?.enabled && (
+                          <span className="text-[11px] text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 font-medium">
+                            1 {selectedProd.primaryUnit} = {selectedProd.unitConversion.conversionRatio} {selectedProd.unitConversion.baseUnit}
+                          </span>
+                        )}
+                      </div>
                     ) : null}
                   </div>
 
@@ -697,7 +784,7 @@ export default function NewPurchasePage() {
                         }}
                         className={`px-2.5 py-1 rounded-md font-medium transition-all ${
                           item.isManualProduct
-                            ? "bg-emerald-700 text-white shadow-sm"
+                            ? "bg-[#176B3A] text-white shadow-sm"
                             : "text-slate-600 hover:text-slate-900"
                         }`}
                       >
@@ -724,7 +811,7 @@ export default function NewPurchasePage() {
                     {!item.isManualProduct ? (
                       <div>
                         <label htmlFor={`prod-sel-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                          Product *
+                          Select Product from Catalogue *
                         </label>
                         <select
                           id={`prod-sel-${item.id}`}
@@ -733,7 +820,7 @@ export default function NewPurchasePage() {
                           aria-label="Select Product"
                           className="w-full h-9 px-3 rounded-lg border border-slate-200 bg-white text-xs sm:text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
                         >
-                          <option value="">-- Choose Product --</option>
+                          <option value="">-- Choose Catalogue Product --</option>
                           {products.map((p) => (
                             <option key={p._id} value={p._id}>
                               {p.name} ({p.brand}) {p.sku ? `[${p.sku}]` : ""} - {p.primaryUnit}
@@ -943,11 +1030,27 @@ export default function NewPurchasePage() {
 
                 {/* Multi-Batch Details Subsection */}
                 <div className="p-3 bg-white rounded-lg border border-slate-200/80 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
-                      <Box className="w-3.5 h-3.5 text-emerald-700" />
-                      Batch Tracking ({item.batches.length} {item.batches.length === 1 ? "Batch" : "Batches"})
-                    </span>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                        <Box className="w-3.5 h-3.5 text-[#176B3A]" />
+                        Batch Tracking ({item.batches.length} {item.batches.length === 1 ? "Batch" : "Batches"})
+                      </span>
+                      {isBatchFullyAllocated ? (
+                        <span className="text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 font-medium px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <Check className="w-3 h-3" /> Fully Allocated ({batchSum} / {item.orderedQty} {item.primaryUnit})
+                        </span>
+                      ) : isBatchOverAllocated ? (
+                        <span className="text-[11px] bg-rose-50 text-rose-700 border border-rose-200 font-medium px-2 py-0.5 rounded-full">
+                          ⚠ Exceeds by {round2(batchSum - item.orderedQty)} {item.primaryUnit}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] bg-amber-50 text-amber-700 border border-amber-200 font-medium px-2 py-0.5 rounded-full">
+                          Unallocated: {round2(item.orderedQty - batchSum)} {item.primaryUnit}
+                        </span>
+                      )}
+                    </div>
+
                     <button
                       type="button"
                       onClick={() => handleAddBatch(item.id)}
@@ -958,76 +1061,101 @@ export default function NewPurchasePage() {
                   </div>
 
                   <div className="space-y-2">
-                    {item.batches.map((batch, bIdx) => (
-                      <div key={bIdx} className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center text-xs">
-                        <div>
-                          <Input
-                            placeholder="Batch # (e.g. B-101)"
-                            value={batch.batchNumber}
-                            onChange={(e) =>
-                              handleBatchChange(item.id, bIdx, "batchNumber", e.target.value)
-                            }
-                            className="h-8 text-xs font-mono uppercase bg-slate-50"
-                          />
-                        </div>
-                        <div>
-                          <Input
-                            type="date"
-                            title="Manufacturing Date"
-                            value={batch.manufacturingDate || ""}
-                            onChange={(e) =>
-                              handleBatchChange(item.id, bIdx, "manufacturingDate", e.target.value)
-                            }
-                            className="h-8 text-xs bg-slate-50"
-                          />
-                        </div>
-                        <div>
-                          <Input
-                            type="date"
-                            title="Expiry Date"
-                            value={batch.expiryDate || ""}
-                            onChange={(e) =>
-                              handleBatchChange(item.id, bIdx, "expiryDate", e.target.value)
-                            }
-                            className="h-8 text-xs bg-slate-50"
-                          />
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <Input
-                            type="number"
-                            min="0.01"
-                            step="any"
-                            placeholder="Qty"
-                            value={batch.quantity}
-                            onChange={(e) =>
-                              handleBatchChange(
-                                item.id,
-                                bIdx,
-                                "quantity",
-                                parseFloat(e.target.value) || 0
-                              )
-                            }
-                            className="h-8 text-xs bg-slate-50 w-24"
-                          />
-                          {item.batches.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveBatch(item.id, bIdx)}
-                              className="text-slate-400 hover:text-rose-600 p-1"
-                              title="Remove Batch"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
+                    {item.batches.map((batch, bIdx) => {
+                      const hasDateError =
+                        batch.manufacturingDate &&
+                        batch.expiryDate &&
+                        new Date(batch.manufacturingDate) > new Date(batch.expiryDate);
+
+                      return (
+                        <div key={bIdx} className="space-y-1">
+                          <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center text-xs">
+                            <div>
+                              <Input
+                                placeholder="Batch # (e.g. B-101)"
+                                value={batch.batchNumber}
+                                onChange={(e) =>
+                                  handleBatchChange(item.id, bIdx, "batchNumber", e.target.value)
+                                }
+                                className="h-8 text-xs font-mono uppercase bg-slate-50"
+                              />
+                            </div>
+                            <div>
+                              <Input
+                                type="date"
+                                title="Manufacturing Date"
+                                value={batch.manufacturingDate || ""}
+                                onChange={(e) =>
+                                  handleBatchChange(item.id, bIdx, "manufacturingDate", e.target.value)
+                                }
+                                className="h-8 text-xs bg-slate-50"
+                              />
+                            </div>
+                            <div>
+                              <Input
+                                type="date"
+                                title="Expiry Date (Optional)"
+                                value={batch.expiryDate || ""}
+                                onChange={(e) =>
+                                  handleBatchChange(item.id, bIdx, "expiryDate", e.target.value)
+                                }
+                                className="h-8 text-xs bg-slate-50"
+                              />
+                            </div>
+                            <div className="flex items-center gap-1.5">
+                              <Input
+                                type="number"
+                                min="0.01"
+                                step="any"
+                                placeholder="Qty"
+                                value={batch.quantity}
+                                onChange={(e) =>
+                                  handleBatchChange(
+                                    item.id,
+                                    bIdx,
+                                    "quantity",
+                                    parseFloat(e.target.value) || 0
+                                  )
+                                }
+                                className="h-8 text-xs bg-slate-50 w-24"
+                              />
+                              <span className="text-[11px] text-slate-500 font-medium">
+                                {item.primaryUnit || "Unit"}
+                              </span>
+                              {item.batches.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemoveBatch(item.id, bIdx)}
+                                  className="text-slate-400 hover:text-rose-600 p-1 ml-auto"
+                                  title="Remove Batch"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {hasDateError && (
+                            <p className="text-[11px] text-rose-600 font-medium">
+                              ⚠ Expiry date must be on or after manufacturing date.
+                            </p>
                           )}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
 
                 {/* Line calculation summary banner */}
-                <div className="pt-2 border-t border-slate-200/60 flex flex-wrap items-center justify-between text-xs text-slate-500">
-                  <div className="flex items-center gap-4">
+                <div className="pt-2 border-t border-slate-200/60 flex flex-wrap items-center justify-between text-xs text-slate-500 gap-2">
+                  <div className="flex items-center gap-4 flex-wrap">
+                    <span>
+                      Gross: <strong className="text-slate-700">₹{calc.gross.toFixed(2)}</strong>
+                    </span>
+                    {calc.discount > 0 && (
+                      <span className="text-emerald-700">
+                        Disc: <strong>-₹{calc.discount.toFixed(2)}</strong>
+                      </span>
+                    )}
                     <span>
                       Taxable: <strong className="text-slate-700">₹{calc.taxable.toFixed(2)}</strong>
                     </span>
@@ -1055,28 +1183,97 @@ export default function NewPurchasePage() {
           <CardHeader className="p-0 pb-3 border-b border-slate-100 flex-row items-center justify-between">
             <CardTitle className="text-sm font-semibold text-slate-800 flex items-center gap-2">
               <CreditCard className="w-4 h-4 text-[#176B3A]" />
-              Upfront Supplier Payment & Terms
+              Upfront Supplier Payment & Details
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0 space-y-4">
             <div>
-              <label htmlFor="amount-paid-input" className="block text-xs font-semibold text-slate-700 mb-1">
-                Upfront Amount Paid (₹) — Optional
-              </label>
+              <div className="flex items-center justify-between flex-wrap gap-2 mb-1">
+                <label htmlFor="amount-paid-input" className="block text-xs font-semibold text-slate-700">
+                  Upfront Amount Paid (₹) — Optional
+                </label>
+                <div className="flex items-center gap-1.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setAmountPaid(totals.grandTotal)}
+                    className="px-2 py-0.5 rounded bg-emerald-50 text-[#176B3A] font-semibold hover:bg-emerald-100 transition-colors"
+                  >
+                    Pay Full (₹{totals.grandTotal.toFixed(2)})
+                  </button>
+                  {amountPaid > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAmountPaid(0);
+                        setPaymentReference("");
+                      }}
+                      className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-medium hover:bg-slate-200 transition-colors"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+
               <Input
                 id="amount-paid-input"
                 type="number"
                 min="0"
                 step="0.01"
                 placeholder="0.00"
-                value={amountPaid}
+                value={amountPaid || ""}
                 onChange={(e) => setAmountPaid(parseFloat(e.target.value) || 0)}
                 className="bg-white text-sm max-w-sm"
               />
               <p className="text-[11px] text-slate-400 mt-1">
-                Enter any advance or on-the-spot payment made via UPI, cash, or bank transfer for this invoice.
+                Enter any advance, cash, or immediate electronic payment made to the supplier for this purchase invoice.
               </p>
             </div>
+
+            {/* Payment Method & Reference (Visible when amountPaid > 0) */}
+            {amountPaid > 0 && (
+              <div className="p-3.5 bg-slate-50 border border-slate-200/80 rounded-lg space-y-3">
+                <span className="text-xs font-bold text-slate-800 block">
+                  Payment Mode & Reference
+                </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                  <div>
+                    <label htmlFor="payment-method-select" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Payment Mode
+                    </label>
+                    <select
+                      id="payment-method-select"
+                      value={paymentMethod}
+                      onChange={(e) => setPaymentMethod(e.target.value as any)}
+                      className="w-full h-8 px-2 rounded-lg border border-slate-200 bg-white text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
+                    >
+                      <option value="CASH">Cash</option>
+                      <option value="UPI">UPI (GPay / PhonePe / Paytm)</option>
+                      <option value="BANK_TRANSFER">Bank Transfer (NEFT / RTGS / IMPS)</option>
+                      <option value="CHEQUE">Cheque / Demand Draft</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label htmlFor="payment-ref-input" className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Reference / UTR / Cheque # (Optional)
+                    </label>
+                    <Input
+                      id="payment-ref-input"
+                      placeholder="e.g. UTR12345678, CHQ-99120"
+                      value={paymentReference}
+                      onChange={(e) => setPaymentReference(e.target.value)}
+                      className="h-8 text-xs bg-white"
+                    />
+                  </div>
+                </div>
+
+                {amountPaid > totals.grandTotal && (
+                  <p className="text-[11px] text-amber-700 bg-amber-50 p-2 rounded border border-amber-200">
+                    ℹ Payment of ₹{amountPaid.toFixed(2)} exceeds invoice total of ₹{totals.grandTotal.toFixed(2)}. The excess ₹{round2(amountPaid - totals.grandTotal).toFixed(2)} will be recognized as advance credit with supplier.
+                  </p>
+                )}
+              </div>
+            )}
 
             <div>
               <label htmlFor="notes-input" className="block text-xs font-semibold text-slate-700 mb-1">
@@ -1104,9 +1301,9 @@ export default function NewPurchasePage() {
 
           <CardContent className="p-0 pt-3 space-y-2.5 text-xs sm:text-sm">
             <div className="flex items-center justify-between text-slate-600">
-              <span>Taxable Subtotal:</span>
+              <span>Gross Subtotal:</span>
               <span className="font-semibold text-slate-800">
-                ₹{totals.taxable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                ₹{totals.gross.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
               </span>
             </div>
 
@@ -1118,6 +1315,13 @@ export default function NewPurchasePage() {
                 </span>
               </div>
             )}
+
+            <div className="flex items-center justify-between text-slate-600">
+              <span>Taxable Amount:</span>
+              <span className="font-semibold text-slate-800">
+                ₹{totals.taxable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </span>
+            </div>
 
             <div className="flex items-center justify-between text-slate-600">
               <span>Total GST:</span>
@@ -1134,7 +1338,7 @@ export default function NewPurchasePage() {
             </div>
 
             <div className="flex items-center justify-between text-emerald-700">
-              <span>Amount Paid:</span>
+              <span>Upfront Paid:</span>
               <span className="font-semibold">
                 ₹{(amountPaid || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
               </span>

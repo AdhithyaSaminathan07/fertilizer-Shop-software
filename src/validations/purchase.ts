@@ -88,6 +88,8 @@ export const createPurchaseSchema = z.object({
     .min(1, "At least one product item is required for a purchase entry"),
   status: z.enum(["DRAFT", "PENDING_RECEIPT", "RECEIVED"]).default("PENDING_RECEIPT"),
   amountPaid: z.number().min(0, "Amount paid cannot be negative").default(0),
+  paymentMethod: z.enum(["CASH", "UPI", "BANK_TRANSFER", "CHEQUE"]).optional(),
+  paymentReference: z.string().trim().max(100, "Payment reference cannot exceed 100 characters").optional().or(z.literal("")),
   receiveNow: z.boolean().default(false), // Immediate stock inward flag
   notes: z
     .string()
