@@ -17,6 +17,8 @@ import {
   Box,
   Clock,
   Check,
+  Search,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -79,10 +81,32 @@ interface FormItem {
   discountAmount: number;
   taxRate: number;
   batches: FormBatch[];
+  showCatalogueSelector?: boolean;
 }
 
 function round2(val: number): number {
   return Math.round((val + Number.EPSILON) * 100) / 100;
+}
+
+function createDefaultItem(id: string): FormItem {
+  return {
+    id,
+    isManualProduct: true, // Manual text entry is DEFAULT
+    productId: "",
+    productName: "",
+    brand: "",
+    primaryUnit: "BAGS",
+    sku: "",
+    saveToCatalogue: false, // Default: purchase-only item
+    manualSellingPrice: undefined,
+    manualCategoryId: "",
+    orderedQty: 1,
+    unitPurchasePrice: 0,
+    discountAmount: 0,
+    taxRate: 5,
+    batches: [{ batchNumber: "", quantity: 1 }],
+    showCatalogueSelector: false,
+  };
 }
 
 export default function NewPurchasePage() {
@@ -108,25 +132,7 @@ export default function NewPurchasePage() {
   const [paymentReference, setPaymentReference] = useState("");
   const [notes, setNotes] = useState("");
 
-  const [items, setItems] = useState<FormItem[]>([
-    {
-      id: "item-1",
-      isManualProduct: false,
-      productId: "",
-      productName: "",
-      brand: "",
-      primaryUnit: "BAGS",
-      sku: "",
-      saveToCatalogue: false,
-      manualSellingPrice: undefined,
-      manualCategoryId: "",
-      orderedQty: 1,
-      unitPurchasePrice: 0,
-      discountAmount: 0,
-      taxRate: 5,
-      batches: [{ batchNumber: "", quantity: 1 }],
-    },
-  ]);
+  const [items, setItems] = useState<FormItem[]>([createDefaultItem("item-1")]);
 
   const [submitting, setSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -157,7 +163,6 @@ export default function NewPurchasePage() {
         if (prodRes.ok) {
           const prodData = await prodRes.json();
           if (prodData.success) {
-            // Robust fallback: matches both data.items (standard) and data.products
             const loadedProducts = prodData.data?.items || prodData.data?.products || [];
             setProducts(loadedProducts);
           }
@@ -181,30 +186,60 @@ export default function NewPurchasePage() {
   const selectedSupplier = suppliers.find((s) => (s.id || s._id) === selectedSupplierId);
 
   // Line item handlers
-  function handleProductChange(itemId: string, productId: string) {
+  function handleToggleCatalogueSelector(itemId: string) {
+    setItems((prev) =>
+      prev.map((item) =>
+        item.id === itemId
+          ? { ...item, showCatalogueSelector: !item.showCatalogueSelector }
+          : item
+      )
+    );
+  }
+
+  function handleProductSelect(itemId: string, productId: string) {
     const prod = products.find((p) => p._id === productId);
+    if (!prod) return;
+
     setItems((prev) =>
       prev.map((item) => {
         if (item.id === itemId) {
           const newPrice =
-            typeof prod?.purchasePrice === "number" && prod.purchasePrice > 0
+            typeof prod.purchasePrice === "number" && prod.purchasePrice > 0
               ? prod.purchasePrice
               : item.unitPurchasePrice || 0;
 
           return {
             ...item,
             isManualProduct: false,
-            productId,
-            productName: prod?.name || "",
-            brand: prod?.brand || "",
-            primaryUnit: prod?.primaryUnit || "BAGS",
-            sku: prod?.sku || "",
+            productId: prod._id,
+            productName: prod.name,
+            brand: prod.brand || "",
+            primaryUnit: prod.primaryUnit || "BAGS",
+            sku: prod.sku || "",
             unitPurchasePrice: newPrice,
-            // If there's only 1 batch, keep its quantity aligned with orderedQty
+            saveToCatalogue: false,
+            showCatalogueSelector: false,
             batches:
               item.batches.length === 1
                 ? [{ ...item.batches[0], quantity: item.orderedQty }]
                 : item.batches,
+          };
+        }
+        return item;
+      })
+    );
+  }
+
+  function handleDisconnectCatalogue(itemId: string) {
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.id === itemId) {
+          return {
+            ...item,
+            productId: "",
+            isManualProduct: true,
+            sku: "",
+            saveToCatalogue: false,
           };
         }
         return item;
@@ -242,26 +277,8 @@ export default function NewPurchasePage() {
   }
 
   function handleAddItem() {
-    setItems((prev) => [
-      ...prev,
-      {
-        id: `item-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        isManualProduct: false,
-        productId: "",
-        productName: "",
-        brand: "",
-        primaryUnit: "BAGS",
-        sku: "",
-        saveToCatalogue: false,
-        manualSellingPrice: undefined,
-        manualCategoryId: "",
-        orderedQty: 1,
-        unitPurchasePrice: 0,
-        discountAmount: 0,
-        taxRate: 5,
-        batches: [{ batchNumber: "", quantity: 1 }],
-      },
-    ]);
+    const newId = `item-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+    setItems((prev) => [...prev, createDefaultItem(newId)]);
   }
 
   function handleRemoveItem(itemId: string) {
@@ -347,72 +364,89 @@ export default function NewPurchasePage() {
 
   const outstanding = Math.max(0, round2(totals.grandTotal - (amountPaid || 0)));
 
+  function reportValidationError(message: string, elementId?: string) {
+    setErrorMessage(message);
+    if (elementId && typeof document !== "undefined") {
+      const el = document.getElementById(elementId);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.focus?.();
+      }
+    }
+  }
+
   // Submit Handler
   async function handleSubmit(receiveNow: boolean) {
     setErrorMessage("");
 
     if (!selectedSupplierId) {
-      setErrorMessage("Please select a registered supplier.");
+      reportValidationError("Please select a registered supplier.", "supplier-select");
       return;
     }
 
     if (!supplierInvoiceNumber.trim()) {
-      setErrorMessage("Supplier invoice number is required.");
+      reportValidationError("Supplier invoice number is required.", "invoice-no-input");
       return;
     }
 
     if (!supplierInvoiceDate) {
-      setErrorMessage("Supplier invoice date is required.");
+      reportValidationError("Supplier invoice date is required.", "invoice-date-input");
       return;
     }
 
     // Validate items & batches
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
-      if (it.isManualProduct) {
-        if (!it.productName.trim() || it.productName.trim().length < 2) {
-          setErrorMessage(`Product name for manual line #${i + 1} must be at least 2 characters.`);
-          return;
-        }
-      } else {
-        if (!it.productId) {
-          setErrorMessage(`Please select a catalogue product for line #${i + 1}.`);
-          return;
-        }
+      if (!it.productName.trim() || it.productName.trim().length < 2) {
+        reportValidationError(
+          `Product name for line #${i + 1} must be at least 2 characters.`,
+          `prod-name-${it.id}`
+        );
+        return;
       }
 
       if (it.orderedQty <= 0) {
-        setErrorMessage(`Quantity for line #${i + 1} must be greater than 0.`);
+        reportValidationError(
+          `Quantity for product '${it.productName || `Line #${i + 1}`}' must be greater than 0.`,
+          `qty-${it.id}`
+        );
         return;
       }
 
       if (it.unitPurchasePrice < 0) {
-        setErrorMessage(`Unit price for line #${i + 1} cannot be negative.`);
+        reportValidationError(
+          `Cost price for product '${it.productName || `Line #${i + 1}`}' cannot be negative.`,
+          `price-${it.id}`
+        );
         return;
       }
 
       // Batch validation
       const hasAnyBatchNumber = it.batches.some((b) => b.batchNumber.trim() !== "");
 
-      // If immediate inward is selected, batch numbers and exact quantity matching are mandatory
       if (receiveNow) {
         let batchTotal = 0;
         for (let bIdx = 0; bIdx < it.batches.length; bIdx++) {
           const b = it.batches[bIdx];
           if (!b.batchNumber.trim()) {
-            setErrorMessage(
-              `Batch number is required for line #${i + 1}, batch #${bIdx + 1} when confirming immediate stock inward.`
+            reportValidationError(
+              `Batch number is required for product '${it.productName || `Line #${i + 1}`}', batch #${bIdx + 1} when confirming immediate stock inward.`,
+              `batch-no-${it.id}-${bIdx}`
             );
             return;
           }
           if (b.quantity <= 0) {
-            setErrorMessage(`Batch quantity must be greater than 0 on line #${i + 1}, batch #${bIdx + 1}.`);
+            reportValidationError(
+              `Batch quantity must be greater than 0 on product '${it.productName || `Line #${i + 1}`}', batch #${bIdx + 1}.`,
+              `batch-qty-${it.id}-${bIdx}`
+            );
             return;
           }
           if (b.manufacturingDate && b.expiryDate) {
             if (new Date(b.manufacturingDate) > new Date(b.expiryDate)) {
-              setErrorMessage(
-                `Expiry date must be on or after manufacturing date on line #${i + 1}, batch '${b.batchNumber}'.`
+              reportValidationError(
+                `Expiry date must be on or after manufacturing date on product '${it.productName || `Line #${i + 1}`}', batch '${b.batchNumber}'.`,
+                `batch-no-${it.id}-${bIdx}`
               );
               return;
             }
@@ -421,25 +455,29 @@ export default function NewPurchasePage() {
         }
 
         if (round2(batchTotal) !== round2(it.orderedQty)) {
-          setErrorMessage(
-            `Sum of batch quantities (${batchTotal}) must exactly equal total line quantity (${it.orderedQty}) for product '${it.productName || `Line #${i + 1}`}'.`
+          reportValidationError(
+            `Sum of batch quantities (${batchTotal}) must exactly equal total quantity (${it.orderedQty}) for product '${it.productName || `Line #${i + 1}`}'.`,
+            `qty-${it.id}`
           );
           return;
         }
       } else if (hasAnyBatchNumber) {
-        // If not receiveNow but user entered batch details, validate consistency
         let batchTotal = 0;
         for (let bIdx = 0; bIdx < it.batches.length; bIdx++) {
           const b = it.batches[bIdx];
           if (b.batchNumber.trim()) {
             if (b.quantity <= 0) {
-              setErrorMessage(`Batch quantity must be greater than 0 for batch '${b.batchNumber}' on line #${i + 1}.`);
+              reportValidationError(
+                `Batch quantity must be greater than 0 for batch '${b.batchNumber}' on product '${it.productName || `Line #${i + 1}`}'.`,
+                `batch-qty-${it.id}-${bIdx}`
+              );
               return;
             }
             if (b.manufacturingDate && b.expiryDate) {
               if (new Date(b.manufacturingDate) > new Date(b.expiryDate)) {
-                setErrorMessage(
-                  `Expiry date must be on or after manufacturing date on line #${i + 1}, batch '${b.batchNumber}'.`
+                reportValidationError(
+                  `Expiry date must be on or after manufacturing date on product '${it.productName || `Line #${i + 1}`}', batch '${b.batchNumber}'.`,
+                  `batch-no-${it.id}-${bIdx}`
                 );
                 return;
               }
@@ -448,8 +486,9 @@ export default function NewPurchasePage() {
           }
         }
         if (round2(batchTotal) !== round2(it.orderedQty)) {
-          setErrorMessage(
-            `Sum of batch quantities (${batchTotal}) must equal total line quantity (${it.orderedQty}) for product '${it.productName || `Line #${i + 1}`}'.`
+          reportValidationError(
+            `Sum of batch quantities (${batchTotal}) must equal total quantity (${it.orderedQty}) for product '${it.productName || `Line #${i + 1}`}'.`,
+            `qty-${it.id}`
           );
           return;
         }
@@ -469,39 +508,47 @@ export default function NewPurchasePage() {
         paymentReference: amountPaid > 0 && paymentReference.trim() ? paymentReference.trim() : undefined,
         receiveNow,
         notes: notes.trim() || undefined,
-        items: items.map((it) => ({
-          productId: it.isManualProduct ? undefined : it.productId,
-          isManualProduct: it.isManualProduct,
-          manualProductName: it.isManualProduct ? it.productName.trim() : undefined,
-          manualBrand: it.isManualProduct ? it.brand.trim() || undefined : undefined,
-          manualUnit: it.isManualProduct ? it.primaryUnit || "BAGS" : undefined,
-          manualSellingPrice: it.isManualProduct && it.manualSellingPrice ? Number(it.manualSellingPrice) : undefined,
-          manualCategoryId: it.isManualProduct && it.manualCategoryId ? it.manualCategoryId : undefined,
-          saveToCatalogue: Boolean(it.isManualProduct && it.saveToCatalogue),
-          orderedQty: Number(it.orderedQty),
-          unitPurchasePrice: Number(it.unitPurchasePrice),
-          discountAmount: Number(it.discountAmount || 0),
-          taxRate: Number(it.taxRate || 0),
-          batches: it.batches
-            .filter((b) => b.batchNumber.trim())
-            .map((b) => ({
-              batchNumber: b.batchNumber.trim().toUpperCase(),
-              manufacturingDate: b.manufacturingDate ? new Date(b.manufacturingDate).toISOString() : undefined,
-              expiryDate: b.expiryDate ? new Date(b.expiryDate).toISOString() : undefined,
-              quantity: Number(b.quantity),
-            })),
-        })),
+        items: items.map((it) => {
+          const isManual = it.isManualProduct || !it.productId;
+          return {
+            productId: isManual ? undefined : it.productId,
+            isManualProduct: isManual,
+            manualProductName: isManual ? it.productName.trim() : undefined,
+            manualBrand: isManual ? it.brand.trim() || undefined : undefined,
+            manualUnit: isManual ? (it.primaryUnit.trim() || "BAGS") : undefined,
+            manualSellingPrice: isManual && it.manualSellingPrice ? Number(it.manualSellingPrice) : undefined,
+            manualCategoryId: isManual && it.manualCategoryId ? it.manualCategoryId : undefined,
+            saveToCatalogue: Boolean(isManual && it.saveToCatalogue),
+            orderedQty: Number(it.orderedQty),
+            unitPurchasePrice: Number(it.unitPurchasePrice),
+            discountAmount: Number(it.discountAmount || 0),
+            taxRate: Number(it.taxRate || 0),
+            batches: it.batches
+              .filter((b) => b.batchNumber.trim())
+              .map((b) => ({
+                batchNumber: b.batchNumber.trim().toUpperCase(),
+                manufacturingDate: b.manufacturingDate ? new Date(b.manufacturingDate).toISOString() : undefined,
+                expiryDate: b.expiryDate ? new Date(b.expiryDate).toISOString() : undefined,
+                quantity: Number(b.quantity),
+              })),
+          };
+        }),
       };
 
       const res = await fetch("/api/purchases", {
         method: "POST",
+        credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error?.message || data.message || "Failed to record purchase entry");
+        const errorText =
+          typeof data.error === "string"
+            ? data.error
+            : data.error?.message || data.message || "Failed to record purchase entry";
+        throw new Error(errorText);
       }
 
       const createdId = data.data?.purchase?._id || data.data?.purchase?.id;
@@ -531,7 +578,7 @@ export default function NewPurchasePage() {
               Record Inward Purchase Bill
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Record actual supplier invoice, batch inventory details, and initial payment.
+              Enter purchased products directly with supplier bill particulars, batch details, and initial payment.
             </p>
           </div>
         </div>
@@ -697,7 +744,7 @@ export default function NewPurchasePage() {
         </Card>
       </div>
 
-      {/* Section 2: Line Items & Multiple Batches */}
+      {/* Section 2: Purchased Products & Batches */}
       <Card className="border border-slate-200/80 shadow-sm p-4 sm:p-5">
         <CardHeader className="p-0 pb-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
@@ -706,7 +753,7 @@ export default function NewPurchasePage() {
               Purchased Products & Batches
             </CardTitle>
             <p className="text-xs text-slate-500 mt-0.5">
-              Record invoiced quantities, cost price, GST, and multiple batches per product.
+              Enter product names directly, or optionally pick from catalogue. Multiple batches and custom units supported.
             </p>
           </div>
           <Button
@@ -722,7 +769,6 @@ export default function NewPurchasePage() {
         <CardContent className="p-0 pt-4 space-y-6">
           {items.map((item, index) => {
             const calc = itemCalculations[index];
-            const selectedProd = products.find((p) => p._id === item.productId);
             const batchSum = item.batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0);
             const isBatchFullyAllocated = round2(batchSum) === round2(item.orderedQty);
             const isBatchOverAllocated = round2(batchSum) > round2(item.orderedQty);
@@ -732,6 +778,7 @@ export default function NewPurchasePage() {
                 key={item.id}
                 className="p-4 rounded-xl border border-slate-200/90 bg-slate-50/50 space-y-4 relative"
               >
+                {/* Item Header Banner */}
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 pb-3">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="w-6 h-6 rounded-full bg-emerald-100 text-[#176B3A] text-xs font-bold flex items-center justify-center">
@@ -740,57 +787,33 @@ export default function NewPurchasePage() {
                     <span className="text-xs font-semibold text-slate-800">
                       Product #{index + 1}
                     </span>
-                    {item.isManualProduct ? (
-                      <Badge variant={item.saveToCatalogue ? "agri" : "warning"} size="sm">
-                        {item.saveToCatalogue ? "New: Save to Catalogue" : "New: Purchase Only"}
+                    {item.productId ? (
+                      <Badge variant="agri" size="sm">
+                        Catalog: {item.sku || "Linked"}
                       </Badge>
-                    ) : item.primaryUnit ? (
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <Badge variant="neutral" size="sm">
-                          Unit: {item.primaryUnit}
-                        </Badge>
-                        {selectedProd?.unitConversion?.enabled && (
-                          <span className="text-[11px] text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 font-medium">
-                            1 {selectedProd.primaryUnit} = {selectedProd.unitConversion.conversionRatio} {selectedProd.unitConversion.baseUnit}
-                          </span>
-                        )}
-                      </div>
-                    ) : null}
+                    ) : item.saveToCatalogue ? (
+                      <Badge variant="agri" size="sm">
+                        Will Save to Catalog
+                      </Badge>
+                    ) : (
+                      <Badge variant="neutral" size="sm">
+                        Purchase Only (Free Entry)
+                      </Badge>
+                    )}
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {/* Toggle: Catalog vs Manual Entry */}
-                    <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleItemChange(item.id, "isManualProduct", false);
-                          handleItemChange(item.id, "saveToCatalogue", false);
-                        }}
-                        className={`px-2.5 py-1 rounded-md font-medium transition-all ${
-                          !item.isManualProduct
-                            ? "bg-white text-slate-900 shadow-sm"
-                            : "text-slate-600 hover:text-slate-900"
-                        }`}
-                      >
-                        Select from Catalogue
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleItemChange(item.id, "isManualProduct", true);
-                          handleItemChange(item.id, "productId", "");
-                          if (!item.primaryUnit) handleItemChange(item.id, "primaryUnit", "BAGS");
-                        }}
-                        className={`px-2.5 py-1 rounded-md font-medium transition-all ${
-                          item.isManualProduct
-                            ? "bg-[#176B3A] text-white shadow-sm"
-                            : "text-slate-600 hover:text-slate-900"
-                        }`}
-                      >
-                        + Enter New Product
-                      </button>
-                    </div>
+                    {/* Secondary option: Select from catalogue */}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => handleToggleCatalogueSelector(item.id)}
+                      className="text-xs h-8 text-slate-700 hover:text-[#176B3A]"
+                      leftIcon={item.showCatalogueSelector ? <X className="w-3.5 h-3.5" /> : <Search className="w-3.5 h-3.5" />}
+                    >
+                      {item.showCatalogueSelector ? "Close Catalogue Search" : "Select Existing Catalogue Product"}
+                    </Button>
 
                     {items.length > 1 && (
                       <button
@@ -805,81 +828,161 @@ export default function NewPurchasePage() {
                   </div>
                 </div>
 
-                {/* Main Product Inputs */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
-                  <div className="sm:col-span-2">
-                    {!item.isManualProduct ? (
-                      <div>
-                        <label htmlFor={`prod-sel-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                          Select Product from Catalogue *
-                        </label>
-                        <select
-                          id={`prod-sel-${item.id}`}
-                          value={item.productId}
-                          onChange={(e) => handleProductChange(item.id, e.target.value)}
-                          aria-label="Select Product"
-                          className="w-full h-9 px-3 rounded-lg border border-slate-200 bg-white text-xs sm:text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
-                        >
-                          <option value="">-- Choose Catalogue Product --</option>
-                          {products.map((p) => (
-                            <option key={p._id} value={p._id}>
-                              {p.name} ({p.brand}) {p.sku ? `[${p.sku}]` : ""} - {p.primaryUnit}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <div>
-                          <label htmlFor={`prod-name-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                            Product Name *
-                          </label>
-                          <Input
-                            id={`prod-name-${item.id}`}
-                            placeholder="e.g. Tata Rallis Panida 1L"
-                            value={item.productName}
-                            onChange={(e) => handleItemChange(item.id, "productName", e.target.value)}
-                            className="h-9 bg-white text-xs sm:text-sm font-medium"
-                          />
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label htmlFor={`prod-brand-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                              Brand (Optional)
-                            </label>
-                            <Input
-                              id={`prod-brand-${item.id}`}
-                              placeholder="e.g. Tata Rallis"
-                              value={item.brand}
-                              onChange={(e) => handleItemChange(item.id, "brand", e.target.value)}
-                              className="h-8 bg-white text-xs"
-                            />
-                          </div>
-                          <div>
-                            <label htmlFor={`prod-unit-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                              Unit *
-                            </label>
-                            <select
-                              id={`prod-unit-${item.id}`}
-                              value={item.primaryUnit || "BAGS"}
-                              onChange={(e) => handleItemChange(item.id, "primaryUnit", e.target.value)}
-                              className="w-full h-8 px-2 rounded-lg border border-slate-200 bg-white text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
-                            >
-                              {PRODUCT_UNITS.map((u) => (
-                                <option key={u} value={u}>
-                                  {u}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        </div>
-                      </div>
-                    )}
+                {/* Optional Catalogue Search & Auto-Populate Drawer */}
+                {item.showCatalogueSelector && (
+                  <div className="p-3.5 bg-emerald-50/70 border border-emerald-200 rounded-lg space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-emerald-950 flex items-center gap-1.5">
+                        <Building2 className="w-3.5 h-3.5 text-[#176B3A]" />
+                        Select Existing Catalogue Product to Auto-Populate:
+                      </span>
+                      <span className="text-[11px] text-emerald-700">
+                        {products.length} registered catalogue products available
+                      </span>
+                    </div>
+                    <select
+                      value={item.productId}
+                      onChange={(e) => {
+                        if (e.target.value) {
+                          handleProductSelect(item.id, e.target.value);
+                        }
+                      }}
+                      aria-label="Select Catalogue Product"
+                      className="w-full h-9 px-3 rounded-lg border border-emerald-300 bg-white text-xs sm:text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
+                    >
+                      <option value="">-- Choose Catalogue Product --</option>
+                      {products.map((p) => (
+                        <option key={p._id} value={p._id}>
+                          {p.name} ({p.brand}) {p.sku ? `[${p.sku}]` : ""} — {p.primaryUnit} {p.purchasePrice ? `(Cost: ₹${p.purchasePrice})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Linked Catalogue Notice Banner (if linked) */}
+                {item.productId && (
+                  <div className="p-2.5 bg-emerald-50 border border-emerald-200/80 rounded-lg flex items-center justify-between flex-wrap gap-2 text-xs">
+                    <div className="flex items-center gap-2 text-emerald-900">
+                      <CheckCircle2 className="w-4 h-4 text-[#176B3A] shrink-0" />
+                      <span>
+                        Populated from catalogue: <strong>{item.productName}</strong> ({item.brand}) {item.sku ? `[${item.sku}]` : ""}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleDisconnectCatalogue(item.id)}
+                      className="text-[11px] text-slate-600 hover:text-rose-600 underline font-medium"
+                    >
+                      Disconnect / Treat as Free Text Product
+                    </button>
+                  </div>
+                )}
+
+                {/* Primary Product Inputs: Product Name is FIRST visible field */}
+                <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                  {/* PRODUCT NAME * */}
+                  <div className="md:col-span-6">
+                    <label
+                      htmlFor={`prod-name-${item.id}`}
+                      className="block text-[11px] font-bold text-slate-800 uppercase tracking-wider mb-1"
+                    >
+                      PRODUCT NAME *
+                    </label>
+                    <Input
+                      id={`prod-name-${item.id}`}
+                      placeholder="Enter product name"
+                      value={item.productName}
+                      disabled={Boolean(item.productId)}
+                      onChange={(e) => handleItemChange(item.id, "productName", e.target.value)}
+                      className={`h-9 text-xs sm:text-sm font-medium ${
+                        item.productId ? "bg-slate-100 text-slate-600 cursor-not-allowed" : "bg-white"
+                      }`}
+                    />
                   </div>
 
+                  {/* BRAND */}
+                  <div className="md:col-span-3">
+                    <label
+                      htmlFor={`prod-brand-${item.id}`}
+                      className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1"
+                    >
+                      BRAND (OPTIONAL)
+                    </label>
+                    <Input
+                      id={`prod-brand-${item.id}`}
+                      placeholder="e.g. Tata, Bayer, Coromandel"
+                      value={item.brand}
+                      disabled={Boolean(item.productId)}
+                      onChange={(e) => handleItemChange(item.id, "brand", e.target.value)}
+                      className={`h-9 text-xs sm:text-sm ${
+                        item.productId ? "bg-slate-100 text-slate-600 cursor-not-allowed" : "bg-white"
+                      }`}
+                    />
+                  </div>
+
+                  {/* UNIT (Selectable or Enterable via Datalist) */}
+                  <div className="md:col-span-3">
+                    <label
+                      htmlFor={`prod-unit-${item.id}`}
+                      className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1"
+                    >
+                      UNIT *
+                    </label>
+                    <div className="relative">
+                      <input
+                        id={`prod-unit-${item.id}`}
+                        list={`units-list-${item.id}`}
+                        type="text"
+                        placeholder="e.g. BAGS, KG, L"
+                        value={item.primaryUnit}
+                        disabled={Boolean(item.productId)}
+                        onChange={(e) =>
+                          handleItemChange(item.id, "primaryUnit", e.target.value.toUpperCase())
+                        }
+                        className={`w-full h-9 px-3 rounded-lg border border-slate-200 text-xs sm:text-sm focus:outline-none focus:ring-2 focus:ring-[#176B3A] font-medium uppercase ${
+                          item.productId
+                            ? "bg-slate-100 text-slate-600 cursor-not-allowed"
+                            : "bg-white text-slate-800"
+                        }`}
+                      />
+                      <datalist id={`units-list-${item.id}`}>
+                        {PRODUCT_UNITS.map((u) => (
+                          <option key={u} value={u} />
+                        ))}
+                      </datalist>
+                    </div>
+                    {/* Quick unit select chips */}
+                    <div className="flex items-center gap-1 mt-1 flex-wrap">
+                      {["BAGS", "KG", "L", "PIECES", "BOXES", "BOTTLES"].map((quickUnit) => (
+                        <button
+                          key={quickUnit}
+                          type="button"
+                          disabled={Boolean(item.productId)}
+                          onClick={() => handleItemChange(item.id, "primaryUnit", quickUnit)}
+                          className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                            item.productId
+                              ? "bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed"
+                              : item.primaryUnit === quickUnit
+                              ? "bg-[#176B3A] text-white border-[#176B3A]"
+                              : "bg-slate-100 text-slate-600 border-slate-200 hover:bg-slate-200"
+                          }`}
+                        >
+                          {quickUnit}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Financial & Quantity Inputs */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <div>
-                    <label htmlFor={`qty-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                      Qty ({item.primaryUnit || "Unit"}) *
+                    <label
+                      htmlFor={`qty-${item.id}`}
+                      className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1"
+                    >
+                      QTY ({item.primaryUnit || "UNIT"}) *
                     </label>
                     <Input
                       id={`qty-${item.id}`}
@@ -895,8 +998,11 @@ export default function NewPurchasePage() {
                   </div>
 
                   <div>
-                    <label htmlFor={`price-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                      Cost Price (₹) *
+                    <label
+                      htmlFor={`price-${item.id}`}
+                      className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1"
+                    >
+                      COST PRICE (₹) *
                     </label>
                     <Input
                       id={`price-${item.id}`}
@@ -916,8 +1022,11 @@ export default function NewPurchasePage() {
                   </div>
 
                   <div>
-                    <label htmlFor={`disc-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                      Discount (₹)
+                    <label
+                      htmlFor={`disc-${item.id}`}
+                      className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1"
+                    >
+                      DISCOUNT (₹)
                     </label>
                     <Input
                       id={`disc-${item.id}`}
@@ -937,8 +1046,11 @@ export default function NewPurchasePage() {
                   </div>
 
                   <div>
-                    <label htmlFor={`tax-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                      GST Rate
+                    <label
+                      htmlFor={`tax-${item.id}`}
+                      className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1"
+                    >
+                      GST RATE
                     </label>
                     <select
                       id={`tax-${item.id}`}
@@ -958,8 +1070,8 @@ export default function NewPurchasePage() {
                   </div>
                 </div>
 
-                {/* Catalogue Integration Panel (Only for manually entered products) */}
-                {item.isManualProduct && (
+                {/* Save to Catalogue Checkbox (Only for free-entry manual products) */}
+                {!item.productId && (
                   <div className="p-3 bg-white rounded-lg border border-slate-200/90 text-xs space-y-2">
                     <div className="flex items-center justify-between flex-wrap gap-2">
                       <label className="flex items-center gap-2 cursor-pointer select-none">
@@ -972,13 +1084,13 @@ export default function NewPurchasePage() {
                           className="w-4 h-4 text-[#176B3A] rounded border-slate-300 focus:ring-[#176B3A]"
                         />
                         <span className="font-semibold text-slate-800">
-                          Save to Product Catalogue
+                          Save this product to Products & Catalog
                         </span>
                       </label>
                       <span className="text-[11px] text-slate-500">
                         {item.saveToCatalogue
-                          ? "✓ Permanent catalogue item: auto-generates SKU, tracks inventory and enables future sales"
-                          : "Purchase-only item: recorded on invoice without adding to catalog inventory"}
+                          ? "✓ Permanent catalogue item: auto-assigns SKU, tracks inventory and enables future sales"
+                          : "Purchase-only item: recorded on invoice without adding to product catalogue"}
                       </span>
                     </div>
 
@@ -986,7 +1098,7 @@ export default function NewPurchasePage() {
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-slate-100">
                         <div>
                           <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                            Category (Optional)
+                            Category (Optional / Defaults to General)
                           </label>
                           <select
                             value={item.manualCategoryId || ""}
@@ -1072,6 +1184,7 @@ export default function NewPurchasePage() {
                           <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center text-xs">
                             <div>
                               <Input
+                                id={`batch-no-${item.id}-${bIdx}`}
                                 placeholder="Batch # (e.g. B-101)"
                                 value={batch.batchNumber}
                                 onChange={(e) =>
@@ -1104,6 +1217,7 @@ export default function NewPurchasePage() {
                             </div>
                             <div className="flex items-center gap-1.5">
                               <Input
+                                id={`batch-qty-${item.id}-${bIdx}`}
                                 type="number"
                                 min="0.01"
                                 step="any"
@@ -1207,14 +1321,13 @@ export default function NewPurchasePage() {
                         setAmountPaid(0);
                         setPaymentReference("");
                       }}
-                      className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-medium hover:bg-slate-200 transition-colors"
+                      className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
                     >
                       Clear
                     </button>
                   )}
                 </div>
               </div>
-
               <Input
                 id="amount-paid-input"
                 type="number"
@@ -1223,156 +1336,170 @@ export default function NewPurchasePage() {
                 placeholder="0.00"
                 value={amountPaid || ""}
                 onChange={(e) => setAmountPaid(parseFloat(e.target.value) || 0)}
-                className="bg-white text-sm max-w-sm"
+                className="bg-white font-mono text-sm max-w-xs"
               />
-              <p className="text-[11px] text-slate-400 mt-1">
-                Enter any advance, cash, or immediate electronic payment made to the supplier for this purchase invoice.
-              </p>
             </div>
 
-            {/* Payment Method & Reference (Visible when amountPaid > 0) */}
+            {/* Supplier Advance Warning (when amountPaid > totals.grandTotal) */}
+            {amountPaid > totals.grandTotal && (
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2.5 text-xs text-amber-800">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <p className="font-semibold text-amber-900">
+                    Supplier Advance Payment: ₹{(amountPaid - totals.grandTotal).toFixed(2)}
+                  </p>
+                  <p className="text-amber-700">
+                    The upfront payment exceeds the invoice total (₹{totals.grandTotal.toFixed(2)}) by{" "}
+                    <strong className="font-semibold">₹{(amountPaid - totals.grandTotal).toFixed(2)}</strong>.
+                    This excess is treated as an advance credit with the supplier and can be adjusted against future purchases or payables.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Payment Method & Reference Selection */}
             {amountPaid > 0 && (
-              <div className="p-3.5 bg-slate-50 border border-slate-200/80 rounded-lg space-y-3">
-                <span className="text-xs font-bold text-slate-800 block">
-                  Payment Mode & Reference
-                </span>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div className="p-3 bg-slate-50 border border-slate-200/80 rounded-lg space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
-                    <label htmlFor="payment-method-select" className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Payment Mode
+                    <label htmlFor="payment-method-select" className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                      Payment Method *
                     </label>
                     <select
                       id="payment-method-select"
                       value={paymentMethod}
                       onChange={(e) => setPaymentMethod(e.target.value as any)}
-                      className="w-full h-8 px-2 rounded-lg border border-slate-200 bg-white text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
+                      className="w-full h-9 px-3 rounded-lg border border-slate-200 bg-white text-xs sm:text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
                     >
                       <option value="CASH">Cash</option>
                       <option value="UPI">UPI (GPay / PhonePe / Paytm)</option>
                       <option value="BANK_TRANSFER">Bank Transfer (NEFT / RTGS / IMPS)</option>
-                      <option value="CHEQUE">Cheque / Demand Draft</option>
+                      <option value="CHEQUE">Cheque</option>
                     </select>
                   </div>
+
                   <div>
-                    <label htmlFor="payment-ref-input" className="block text-[11px] font-semibold text-slate-600 mb-1">
-                      Reference / UTR / Cheque # (Optional)
+                    <label htmlFor="payment-ref-input" className="block text-[11px] font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                      Payment Reference / Transaction ID
                     </label>
                     <Input
                       id="payment-ref-input"
-                      placeholder="e.g. UTR12345678, CHQ-99120"
+                      placeholder={
+                        paymentMethod === "UPI"
+                          ? "e.g. UPI Ref / UTR # 401234..."
+                          : paymentMethod === "BANK_TRANSFER"
+                          ? "e.g. NEFT UTR / Txn Reference #"
+                          : paymentMethod === "CHEQUE"
+                          ? "e.g. Cheque # 000124 (SBI)"
+                          : "Optional Cash Voucher / Receipt #"
+                      }
                       value={paymentReference}
                       onChange={(e) => setPaymentReference(e.target.value)}
-                      className="h-8 text-xs bg-white"
+                      className="h-9 bg-white text-xs sm:text-sm"
                     />
                   </div>
                 </div>
-
-                {amountPaid > totals.grandTotal && (
-                  <p className="text-[11px] text-amber-700 bg-amber-50 p-2 rounded border border-amber-200">
-                    ℹ Payment of ₹{amountPaid.toFixed(2)} exceeds invoice total of ₹{totals.grandTotal.toFixed(2)}. The excess ₹{round2(amountPaid - totals.grandTotal).toFixed(2)} will be recognized as advance credit with supplier.
-                  </p>
-                )}
               </div>
             )}
 
             <div>
-              <label htmlFor="notes-input" className="block text-xs font-semibold text-slate-700 mb-1">
-                Internal Remarks & Lorry / Transport Details
+              <label htmlFor="internal-notes-input" className="block text-xs font-semibold text-slate-700 mb-1">
+                Internal Remarks / Goods Note (Optional)
               </label>
               <textarea
-                id="notes-input"
-                rows={3}
-                placeholder="Vehicle number, transport LR number, delivery notes..."
+                id="internal-notes-input"
+                rows={2}
+                placeholder="e.g. Received via VRL Logistics, Vehicle TN-45-AB-1234, Driver Selvam"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                className="w-full p-2.5 rounded-lg border border-slate-200 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A] resize-none"
+                className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white text-xs sm:text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
               />
             </div>
           </CardContent>
         </Card>
 
-        {/* Financial Summary Card */}
-        <Card className="border border-slate-200/80 shadow-sm p-4 sm:p-5 bg-white">
-          <CardHeader className="p-0 pb-3 border-b border-slate-100">
-            <CardTitle className="text-sm font-bold text-slate-900 uppercase tracking-wider">
-              Financial Summary
-            </CardTitle>
-          </CardHeader>
-
-          <CardContent className="p-0 pt-3 space-y-2.5 text-xs sm:text-sm">
-            <div className="flex items-center justify-between text-slate-600">
-              <span>Gross Subtotal:</span>
-              <span className="font-semibold text-slate-800">
-                ₹{totals.gross.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-              </span>
-            </div>
-
-            {totals.discount > 0 && (
-              <div className="flex items-center justify-between text-emerald-700">
-                <span>Total Discount:</span>
-                <span className="font-semibold">
-                  -₹{totals.discount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+        {/* Live Financial Totals */}
+        <Card className="border border-slate-200/80 shadow-sm p-4 sm:p-5 flex flex-col justify-between">
+          <div>
+            <CardHeader className="p-0 pb-3 border-b border-slate-100">
+              <CardTitle className="text-sm font-semibold text-slate-800">
+                Purchase Bill Summary
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="p-0 pt-3 space-y-2 text-xs">
+              <div className="flex justify-between text-slate-600">
+                <span>Gross Subtotal:</span>
+                <span className="font-mono">₹{totals.gross.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>Invoiced Discount:</span>
+                <span className="font-mono text-emerald-700">-₹{totals.discount.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>Taxable Value:</span>
+                <span className="font-mono">₹{totals.taxable.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>Total GST:</span>
+                <span className="font-mono">₹{totals.tax.toFixed(2)}</span>
+              </div>
+              <div className="border-t border-slate-200/80 pt-2 flex justify-between font-bold text-sm text-slate-900">
+                <span>Invoiced Grand Total:</span>
+                <span className="font-mono text-base text-[#176B3A]">
+                  ₹{totals.grandTotal.toFixed(2)}
                 </span>
               </div>
+              <div className="border-t border-slate-100 pt-2 flex justify-between text-slate-600">
+                <span>Upfront Payment:</span>
+                <span className="font-mono text-emerald-700">
+                  {amountPaid > 0 ? `-₹${amountPaid.toFixed(2)}` : "₹0.00"}
+                </span>
+              </div>
+              {amountPaid > totals.grandTotal && (
+                <div className="flex justify-between font-semibold text-xs text-amber-700 pt-1">
+                  <span>Advance Credit:</span>
+                  <span className="font-mono">+₹{(amountPaid - totals.grandTotal).toFixed(2)}</span>
+                </div>
+              )}
+              <div className="flex justify-between font-semibold text-xs text-rose-700 pt-1">
+                <span>Outstanding Payable:</span>
+                <span className="font-mono">₹{outstanding.toFixed(2)}</span>
+              </div>
+            </CardContent>
+          </div>
+
+          {/* Action Buttons in Card */}
+          <div className="pt-4 border-t border-slate-100 space-y-2">
+            {errorMessage && (
+              <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-start gap-2.5 text-xs text-rose-800">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="font-semibold text-rose-900">Unable to Proceed</p>
+                  <p className="mt-0.5 text-rose-700 leading-relaxed">{errorMessage}</p>
+                </div>
+              </div>
             )}
-
-            <div className="flex items-center justify-between text-slate-600">
-              <span>Taxable Amount:</span>
-              <span className="font-semibold text-slate-800">
-                ₹{totals.taxable.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between text-slate-600">
-              <span>Total GST:</span>
-              <span className="font-semibold text-slate-800">
-                +₹{totals.tax.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-              </span>
-            </div>
-
-            <div className="pt-2 border-t border-slate-200 flex items-center justify-between">
-              <span className="text-sm font-bold text-slate-900">Grand Total:</span>
-              <span className="text-lg font-bold text-[#176B3A]">
-                ₹{totals.grandTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between text-emerald-700">
-              <span>Upfront Paid:</span>
-              <span className="font-semibold">
-                ₹{(amountPaid || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-              </span>
-            </div>
-
-            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-amber-700 font-bold">
-              <span>Net Outstanding:</span>
-              <span className="text-base">
-                ₹{outstanding.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-              </span>
-            </div>
-
-            {/* Bottom Actions */}
-            <div className="pt-4 space-y-2">
-              <Button
-                variant="primary"
-                className="w-full"
-                loading={submitting}
-                onClick={() => handleSubmit(true)}
-                leftIcon={<CheckCircle2 className="w-4 h-4" />}
-              >
-                Confirm & Inward Stock Now
-              </Button>
-              <Button
-                variant="outline"
-                className="w-full"
-                disabled={submitting}
-                onClick={() => handleSubmit(false)}
-                leftIcon={<Clock className="w-4 h-4" />}
-              >
-                Save (Pending Goods)
-              </Button>
-            </div>
-          </CardContent>
+            <Button
+              variant="primary"
+              size="sm"
+              loading={submitting}
+              onClick={() => handleSubmit(true)}
+              leftIcon={<CheckCircle2 className="w-4 h-4" />}
+              className="w-full justify-center"
+            >
+              Confirm & Inward Stock Now
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={submitting}
+              onClick={() => handleSubmit(false)}
+              leftIcon={<Clock className="w-4 h-4" />}
+              className="w-full justify-center text-xs"
+            >
+              Save as Pending Receipt
+            </Button>
+          </div>
         </Card>
       </div>
     </div>
