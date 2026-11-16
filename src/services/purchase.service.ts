@@ -3,10 +3,12 @@ import { connectDB } from "@/lib/db";
 import { Purchase, type IPurchaseDocument } from "@/models/purchase";
 import { Supplier } from "@/models/supplier";
 import { Product } from "@/models/product";
+import { Batch } from "@/models/batch";
 import { logAuditEvent } from "@/lib/auth";
 import type {
   IPurchase,
   IPurchaseItem,
+  IPurchaseReceipt,
   PurchaseFilterParams,
   PurchaseStatus,
   PurchaseSupplierSnapshot,
@@ -16,6 +18,7 @@ import type {
   CreatePurchaseInput,
   UpdatePurchaseDraftInput,
   AmendPurchaseInput,
+  ConfirmInwardInput,
 } from "@/validations/purchase";
 
 export interface ActorContext {
@@ -55,12 +58,12 @@ export function calculateItemLineValues(
 }
 
 /**
- * Generates collision-proof sequential purchase number (PO-YYYYMM-XXXX)
+ * Generates sequential collision-proof purchase bill number (PUR-YYYYMM-XXXX)
  */
 export async function generatePurchaseNumber(): Promise<string> {
   const now = new Date();
   const yearMonth = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const prefix = `PO-${yearMonth}-`;
+  const prefix = `PUR-${yearMonth}-`;
 
   const lastPurchase = await Purchase.findOne(
     { purchaseNumber: { $regex: `^${prefix}` } },
@@ -71,192 +74,164 @@ export async function generatePurchaseNumber(): Promise<string> {
   if (lastPurchase && lastPurchase.purchaseNumber) {
     const parts = lastPurchase.purchaseNumber.split("-");
     const lastSeq = parseInt(parts[parts.length - 1], 10);
-    if (!isNaN(lastSeq)) seq = lastSeq + 1;
+    if (!isNaN(lastSeq)) {
+      seq = lastSeq + 1;
+    }
   }
 
   return `${prefix}${String(seq).padStart(4, "0")}`;
 }
 
 /**
- * Formats a raw document to the IPurchase interface
+ * List purchases in Purchase Register with filters and KPI stats
  */
-function toPurchaseDto(doc: any): IPurchase {
-  return {
-    id: doc._id.toString(),
-    purchaseNumber: doc.purchaseNumber,
-    supplierId: doc.supplierId ? doc.supplierId.toString() : "",
-    supplierSnapshot: doc.supplierSnapshot,
-    supplierInvoiceNumber: doc.supplierInvoiceNumber,
-    supplierInvoiceDate: doc.supplierInvoiceDate ? doc.supplierInvoiceDate.toISOString() : "",
-    purchaseDate: doc.purchaseDate ? doc.purchaseDate.toISOString() : "",
-    items: (doc.items || []).map((item: any) => ({
-      id: item._id ? item._id.toString() : undefined,
-      productId: item.productId ? item.productId.toString() : "",
-      productSnapshot: item.productSnapshot,
-      orderedQty: item.orderedQty,
-      receivedQty: item.receivedQty || 0,
-      unit: item.unit,
-      unitPurchasePrice: item.unitPurchasePrice,
-      discountAmount: item.discountAmount || 0,
-      taxRate: item.taxRate || 0,
-      taxAmount: item.taxAmount || 0,
-      lineTotal: item.lineTotal,
-    })),
-    subtotal: doc.subtotal,
-    discountAmount: doc.discountAmount || 0,
-    taxAmount: doc.taxAmount || 0,
-    grandTotal: doc.grandTotal,
-    receivedQty: doc.receivedQty || 0,
-    recognizedInvoiceValue: doc.recognizedInvoiceValue || 0,
-    amountPaid: doc.amountPaid || 0,
-    paymentStatus: doc.paymentStatus || "UNPAID",
-    status: doc.status || "DRAFT",
-    amendments: (doc.amendments || []).map((a: any) => ({
-      amendmentNumber: a.amendmentNumber,
-      amendedAt: a.amendedAt ? a.amendedAt.toISOString() : "",
-      amendedById: a.amendedById ? a.amendedById.toString() : "",
-      amendedByName: a.amendedByName,
-      reason: a.reason,
-      previousItems: a.previousItems || [],
-      revisedItems: a.revisedItems || [],
-      previousGrandTotal: a.previousGrandTotal,
-      revisedGrandTotal: a.revisedGrandTotal,
-    })),
-    notes: doc.notes,
-    createdById: doc.createdById ? doc.createdById.toString() : undefined,
-    updatedById: doc.updatedById ? doc.updatedById.toString() : undefined,
-    createdAt: doc.createdAt ? doc.createdAt.toISOString() : "",
-    updatedAt: doc.updatedAt ? doc.updatedAt.toISOString() : "",
-  };
-}
-
-/**
- * Lists purchase orders with search, supplier, status, date filtering and pagination
- */
-export async function listPurchases(params: PurchaseFilterParams = {}): Promise<{
+export async function listPurchases(params: PurchaseFilterParams): Promise<{
   purchases: IPurchase[];
-  pagination: {
-    total: number;
-    page: number;
-    limit: number;
-    totalPages: number;
-  };
-  summary: {
-    totalOrders: number;
-    totalAmount: number;
+  totalCount: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  stats: {
+    totalCount: number;
+    totalGrossAmount: number;
+    totalPaidAmount: number;
+    totalOutstandingAmount: number;
     pendingReceiptCount: number;
-    completedCount: number;
+    partiallyReceivedCount: number;
+    receivedCount: number;
+    draftCount: number;
+    cancelledCount: number;
   };
 }> {
   await connectDB();
 
-  const {
-    search,
-    supplierId,
-    status,
-    paymentStatus,
-    startDate,
-    endDate,
-    page = 1,
-    limit = 20,
-    sortBy = "purchaseDate",
-    sortOrder = "desc",
-  } = params;
+  const query: any = {};
 
-  const query: Record<string, any> = {};
-
-  if (supplierId && mongoose.Types.ObjectId.isValid(supplierId)) {
-    query.supplierId = new mongoose.Types.ObjectId(supplierId);
-  }
-
-  if (status) {
-    query.status = status;
-  }
-
-  if (paymentStatus) {
-    query.paymentStatus = paymentStatus;
-  }
-
-  if (startDate || endDate) {
-    query.purchaseDate = {};
-    if (startDate) query.purchaseDate.$gte = new Date(startDate);
-    if (endDate) query.purchaseDate.$lte = new Date(endDate);
-  }
-
-  if (search && search.trim() !== "") {
-    const term = search.trim();
+  if (params.search && params.search.trim()) {
+    const term = params.search.trim();
     query.$or = [
       { purchaseNumber: { $regex: term, $options: "i" } },
       { supplierInvoiceNumber: { $regex: term, $options: "i" } },
       { "supplierSnapshot.name": { $regex: term, $options: "i" } },
-      { "supplierSnapshot.phone": { $regex: term, $options: "i" } },
     ];
   }
 
-  const sortDirection = sortOrder === "asc" ? 1 : -1;
-  const sortOption: Record<string, 1 | -1> = { [sortBy]: sortDirection };
-  const skip = (Math.max(1, page) - 1) * limit;
+  if (params.supplierId) {
+    query.supplierId = new mongoose.Types.ObjectId(params.supplierId);
+  }
 
-  const [docs, total, stats] = await Promise.all([
-    Purchase.find(query).sort(sortOption).skip(skip).limit(limit).lean(),
+  if (params.status && params.status !== ("ALL" as any)) {
+    query.status = params.status;
+  }
+
+  if (params.paymentStatus) {
+    query.paymentStatus = params.paymentStatus;
+  }
+
+  if (params.startDate || params.endDate) {
+    query.purchaseDate = {};
+    if (params.startDate) {
+      query.purchaseDate.$gte = new Date(params.startDate);
+    }
+    if (params.endDate) {
+      const end = new Date(params.endDate);
+      end.setHours(23, 59, 59, 999);
+      query.purchaseDate.$lte = end;
+    }
+  }
+
+  const page = Math.max(1, params.page || 1);
+  const limit = Math.max(1, Math.min(100, params.limit || 20));
+  const skip = (page - 1) * limit;
+
+  const sortField = params.sortBy || "createdAt";
+  const sortDirection = params.sortOrder === "asc" ? 1 : -1;
+  const sortOptions: Record<string, 1 | -1> = { [sortField]: sortDirection };
+
+  const [docs, totalCount, statsAgg] = await Promise.all([
+    Purchase.find(query).sort(sortOptions).skip(skip).limit(limit).lean(),
     Purchase.countDocuments(query),
     Purchase.aggregate([
       {
         $group: {
           _id: null,
-          totalOrders: { $sum: 1 },
-          totalAmount: {
-            $sum: { $cond: [{ $ne: ["$status", "CANCELLED"] }, "$grandTotal", 0] },
-          },
+          totalCount: { $sum: 1 },
+          totalGrossAmount: { $sum: "$grandTotal" },
+          totalPaidAmount: { $sum: "$amountPaid" },
+          totalOutstandingAmount: { $sum: "$outstandingAmount" },
           pendingReceiptCount: {
-            $sum: {
-              $cond: [
-                { $in: ["$status", ["PENDING_RECEIPT", "PARTIALLY_RECEIVED"]] },
-                1,
-                0,
-              ],
-            },
+            $sum: { $cond: [{ $eq: ["$status", "PENDING_RECEIPT"] }, 1, 0] },
           },
-          completedCount: {
+          partiallyReceivedCount: {
+            $sum: { $cond: [{ $eq: ["$status", "PARTIALLY_RECEIVED"] }, 1, 0] },
+          },
+          receivedCount: {
             $sum: { $cond: [{ $eq: ["$status", "RECEIVED"] }, 1, 0] },
+          },
+          draftCount: {
+            $sum: { $cond: [{ $eq: ["$status", "DRAFT"] }, 1, 0] },
+          },
+          cancelledCount: {
+            $sum: { $cond: [{ $eq: ["$status", "CANCELLED"] }, 1, 0] },
           },
         },
       },
     ]),
   ]);
 
-  const summary = stats[0] || {
-    totalOrders: 0,
-    totalAmount: 0,
+  const defaultStats = {
+    totalCount: 0,
+    totalGrossAmount: 0,
+    totalPaidAmount: 0,
+    totalOutstandingAmount: 0,
     pendingReceiptCount: 0,
-    completedCount: 0,
+    partiallyReceivedCount: 0,
+    receivedCount: 0,
+    draftCount: 0,
+    cancelledCount: 0,
   };
 
+  const stats = statsAgg.length > 0 ? { ...defaultStats, ...statsAgg[0] } : defaultStats;
+  delete (stats as any)._id;
+
+  const purchases: IPurchase[] = docs.map((doc: any) => ({
+    ...doc,
+    id: doc._id.toString(),
+    _id: doc._id.toString(),
+    supplierId: doc.supplierId.toString(),
+    createdById: doc.createdById?.toString(),
+    updatedById: doc.updatedById?.toString(),
+    items: doc.items.map((it: any) => ({
+      ...it,
+      id: it._id?.toString(),
+      _id: it._id?.toString(),
+      productId: it.productId.toString(),
+    })),
+  }));
+
   return {
-    purchases: docs.map(toPurchaseDto),
-    pagination: {
-      total,
-      page: Math.max(1, page),
-      limit,
-      totalPages: Math.ceil(total / limit) || 1,
-    },
-    summary: {
-      totalOrders: summary.totalOrders,
-      totalAmount: round2(summary.totalAmount),
-      pendingReceiptCount: summary.pendingReceiptCount,
-      completedCount: summary.completedCount,
+    purchases,
+    totalCount,
+    page,
+    limit,
+    totalPages: Math.ceil(totalCount / limit) || 1,
+    stats: {
+      ...stats,
+      totalGrossAmount: round2(stats.totalGrossAmount),
+      totalPaidAmount: round2(stats.totalPaidAmount),
+      totalOutstandingAmount: round2(stats.totalOutstandingAmount),
     },
   };
 }
 
 /**
- * Gets a single purchase by ID
+ * Get purchase bill by ID
  */
 export async function getPurchaseById(id: string): Promise<IPurchase> {
   await connectDB();
 
   if (!mongoose.Types.ObjectId.isValid(id)) {
-    throw new Error("Invalid purchase ID");
+    throw new Error("Invalid purchase order ID format");
   }
 
   const doc = await Purchase.findById(id).lean();
@@ -264,11 +239,25 @@ export async function getPurchaseById(id: string): Promise<IPurchase> {
     throw new Error("Purchase order not found");
   }
 
-  return toPurchaseDto(doc);
+  return ({
+    ...doc,
+    id: (doc as any)._id.toString(),
+    _id: (doc as any)._id.toString(),
+    supplierId: doc.supplierId.toString(),
+    createdById: doc.createdById?.toString(),
+    updatedById: doc.updatedById?.toString(),
+    items: doc.items.map((it: any) => ({
+      ...it,
+      id: it._id?.toString(),
+      _id: it._id?.toString(),
+      productId: it.productId.toString(),
+    })),
+  } as unknown) as IPurchase;
 }
 
 /**
- * Creates a new purchase order
+ * Creates an actual Purchase Bill in Purchase Register
+ * Supports optional upfront payment and optional immediate stock inward
  */
 export async function createPurchase(
   input: CreatePurchaseInput,
@@ -276,34 +265,33 @@ export async function createPurchase(
 ): Promise<IPurchase> {
   await connectDB();
 
-  // 1. Verify supplier exists and is active
+  // 1. Validate Supplier
   const supplier = await Supplier.findById(input.supplierId);
   if (!supplier) {
     throw new Error("Selected supplier does not exist");
   }
   if (supplier.status !== "ACTIVE") {
-    throw new Error(`Supplier '${supplier.name}' is currently ${supplier.status}. Only ACTIVE suppliers can receive new purchase orders.`);
+    throw new Error(`Supplier '${supplier.name}' is ${supplier.status.toLowerCase()} and cannot accept new purchases`);
   }
 
-  // 2. Prevent duplicate invoice number for the same supplier
-  const duplicateInvoice = await Purchase.findOne({
+  // 2. Check compound unique index: supplierId + supplierInvoiceNumber
+  const existingInvoice = await Purchase.findOne({
     supplierId: supplier._id,
     supplierInvoiceNumber: input.supplierInvoiceNumber.trim(),
-    status: { $ne: "CANCELLED" },
   });
-  if (duplicateInvoice) {
+  if (existingInvoice) {
     throw new Error(
-      `An active purchase order (${duplicateInvoice.purchaseNumber}) with invoice number '${input.supplierInvoiceNumber}' already exists for ${supplier.name}`
+      `An invoice with number '${input.supplierInvoiceNumber}' already exists for supplier '${supplier.name}'.`
     );
   }
 
-  // 3. Build supplier snapshot
+  // 3. Prepare Supplier Snapshot
   const supplierSnapshot: PurchaseSupplierSnapshot = {
     name: supplier.name,
-    contactPerson: supplier.contactPerson,
+    contactPerson: supplier.contactPerson || undefined,
     phone: supplier.phone,
-    email: supplier.email,
-    gstin: supplier.gstin,
+    email: supplier.email || undefined,
+    gstin: supplier.gstin || undefined,
     address: supplier.address
       ? {
           street: supplier.address.street,
@@ -314,27 +302,32 @@ export async function createPurchase(
       : undefined,
   };
 
-  // 4. Validate and build line items with product snapshots
-  const items: any[] = [];
+  // 4. Validate and build line items
   let subtotal = 0;
   let totalDiscount = 0;
   let totalTax = 0;
   let grandTotal = 0;
 
+  const items: any[] = [];
+
   for (const itemInput of input.items) {
     const product = await Product.findById(itemInput.productId);
     if (!product) {
-      throw new Error(`Product ID '${itemInput.productId}' not found`);
+      throw new Error(`Product with ID '${itemInput.productId}' not found`);
+    }
+    if (product.status !== "ACTIVE") {
+      throw new Error(`Product '${product.name}' is not ACTIVE`);
     }
 
-    // Capture product snapshot (supports products with or without SKU)
-    const productSnapshot: PurchaseProductSnapshot = {
-      name: product.name,
-      sku: product.sku || undefined,
-      brand: product.brand,
-      primaryUnit: product.primaryUnit,
-      barcode: product.barcode || undefined,
-    };
+    // Validate batch quantities if batches are provided
+    if (itemInput.batches && itemInput.batches.length > 0) {
+      const batchSum = itemInput.batches.reduce((sum, b) => sum + b.quantity, 0);
+      if (round2(batchSum) !== round2(itemInput.orderedQty)) {
+        throw new Error(
+          `Sum of batch quantities (${batchSum}) must equal ordered quantity (${itemInput.orderedQty}) for product '${product.name}'`
+        );
+      }
+    }
 
     const calc = calculateItemLineValues(
       itemInput.orderedQty,
@@ -343,17 +336,27 @@ export async function createPurchase(
       itemInput.taxRate || 0
     );
 
+    const productSnapshot: PurchaseProductSnapshot = {
+      name: product.name,
+      sku: product.sku || undefined,
+      brand: product.brand,
+      primaryUnit: product.primaryUnit,
+      barcode: product.barcode || undefined,
+    };
+
     items.push({
       productId: product._id,
       productSnapshot,
       orderedQty: itemInput.orderedQty,
       receivedQty: 0,
-      unit: product.primaryUnit, // strictly use product's primary unit
+      unit: product.primaryUnit,
       unitPurchasePrice: round2(itemInput.unitPurchasePrice),
       discountAmount: calc.discount,
       taxRate: round2(itemInput.taxRate || 0),
       taxAmount: calc.tax,
       lineTotal: calc.lineTotal,
+      recognizedValue: 0,
+      batches: itemInput.batches || [],
     });
 
     subtotal = round2(subtotal + calc.taxable);
@@ -363,8 +366,34 @@ export async function createPurchase(
   }
 
   const purchaseNumber = await generatePurchaseNumber();
+  const amountPaid = round2(input.amountPaid || 0);
 
-  const doc = await Purchase.create({
+  // If immediate stock inward is requested upon bill creation
+  if (input.receiveNow) {
+    return createAndInwardPurchaseAtomic(
+      {
+        purchaseNumber,
+        supplier,
+        supplierSnapshot,
+        supplierInvoiceNumber: input.supplierInvoiceNumber.trim(),
+        supplierInvoiceDate: new Date(input.supplierInvoiceDate),
+        purchaseDate: input.purchaseDate ? new Date(input.purchaseDate) : new Date(),
+        items,
+        subtotal,
+        totalDiscount,
+        totalTax,
+        grandTotal,
+        amountPaid,
+        notes: input.notes?.trim(),
+      },
+      actor
+    );
+  }
+
+  // Normal Purchase Bill Entry (Pending Receipt / Draft)
+  const initialStatus: PurchaseStatus = input.status === "DRAFT" ? "DRAFT" : "PENDING_RECEIPT";
+
+  const purchase = new Purchase({
     purchaseNumber,
     supplierId: supplier._id,
     supplierSnapshot,
@@ -378,13 +407,17 @@ export async function createPurchase(
     grandTotal,
     receivedQty: 0,
     recognizedInvoiceValue: 0,
-    amountPaid: 0,
-    paymentStatus: "UNPAID",
-    status: input.status || "DRAFT",
+    amountPaid,
+    outstandingAmount: 0, // Zero financial liability recognized until goods are inwarded!
+    paymentStatus: amountPaid > 0 ? "PARTIALLY_PAID" : "UNPAID",
+    status: initialStatus,
+    receipts: [],
     amendments: [],
     notes: input.notes?.trim() || undefined,
     createdById: new mongoose.Types.ObjectId(actor.id),
   });
+
+  await purchase.save();
 
   await logAuditEvent({
     action: "PURCHASE_CREATED" as any,
@@ -392,19 +425,406 @@ export async function createPurchase(
     userName: actor.name,
     ipAddress: actor.ip,
     details: {
-      purchaseId: doc._id.toString(),
-      purchaseNumber: doc.purchaseNumber,
+      purchaseId: purchase._id.toString(),
+      purchaseNumber: purchase.purchaseNumber,
+      supplierId: supplier._id.toString(),
       supplierName: supplier.name,
-      grandTotal: doc.grandTotal,
-      status: doc.status,
+      grandTotal,
+      amountPaid,
+      status: initialStatus,
     },
   });
 
-  return getPurchaseById(doc._id.toString());
+  return getPurchaseById(purchase._id.toString());
 }
 
 /**
- * Updates an existing draft purchase order or confirms it to PENDING_RECEIPT
+ * Atomic helper to create and inward purchase simultaneously in a native MongoDB transaction
+ */
+async function createAndInwardPurchaseAtomic(
+  params: {
+    purchaseNumber: string;
+    supplier: any;
+    supplierSnapshot: PurchaseSupplierSnapshot;
+    supplierInvoiceNumber: string;
+    supplierInvoiceDate: Date;
+    purchaseDate: Date;
+    items: any[];
+    subtotal: number;
+    totalDiscount: number;
+    totalTax: number;
+    grandTotal: number;
+    amountPaid: number;
+    notes?: string;
+  },
+  actor: ActorContext
+): Promise<IPurchase> {
+  const session = await mongoose.startSession();
+
+  let createdPurchaseId: string = "";
+
+  try {
+    await session.withTransaction(async () => {
+      const receiptItems: any[] = [];
+      let totalReceivedQty = 0;
+
+      for (const item of params.items) {
+        item.receivedQty = item.orderedQty;
+        item.recognizedValue = item.lineTotal;
+        totalReceivedQty += item.orderedQty;
+
+        // 1. Atomic Product stock increment
+        await Product.findByIdAndUpdate(
+          item.productId,
+          { $inc: { currentStock: item.orderedQty } },
+          { session }
+        );
+
+        // 2. Atomic Batch processing
+        const itemBatches = item.batches && item.batches.length > 0
+          ? item.batches
+          : [
+              {
+                batchNumber: `BAT-${params.purchaseNumber.replace(/[^0-9]/g, "")}-${String(item.productId).slice(-4)}`,
+                quantity: item.orderedQty,
+              },
+            ];
+
+        for (const b of itemBatches) {
+          // If batch exists, validate conflicting dates
+          const existingBatch = await Batch.findOne({
+            productId: item.productId,
+            batchNumber: b.batchNumber.toUpperCase().trim(),
+          }).session(session);
+
+          if (existingBatch) {
+            if (
+              b.expiryDate &&
+              existingBatch.expiryDate &&
+              new Date(b.expiryDate).toISOString() !== new Date(existingBatch.expiryDate).toISOString()
+            ) {
+              throw new Error(
+                `Conflicting expiry date for existing batch '${b.batchNumber}'. Existing: ${existingBatch.expiryDate.toISOString()}, Provided: ${new Date(b.expiryDate).toISOString()}`
+              );
+            }
+            existingBatch.quantity += b.quantity;
+            await existingBatch.save({ session });
+          } else {
+            await Batch.create(
+              [
+                {
+                  productId: item.productId,
+                  batchNumber: b.batchNumber.toUpperCase().trim(),
+                  manufacturingDate: b.manufacturingDate ? new Date(b.manufacturingDate) : undefined,
+                  expiryDate: b.expiryDate ? new Date(b.expiryDate) : undefined,
+                  quantity: b.quantity,
+                  purchasePrice: item.unitPurchasePrice,
+                  status: "ACTIVE",
+                },
+              ],
+              { session }
+            );
+          }
+        }
+
+        receiptItems.push({
+          productId: item.productId,
+          receivedQty: item.orderedQty,
+          recognizedValue: item.lineTotal,
+          batches: itemBatches,
+        });
+      }
+
+      const outstandingAmount = Math.max(0, round2(params.grandTotal - params.amountPaid));
+      const paymentStatus =
+        params.amountPaid >= params.grandTotal
+          ? "PAID"
+          : params.amountPaid > 0
+          ? "PARTIALLY_PAID"
+          : "UNPAID";
+
+      const receiptRecord: IPurchaseReceipt = {
+        receiptNumber: `REC-${params.purchaseNumber}-01`,
+        receiptDate: new Date(),
+        receivedById: actor.id,
+        receivedByName: actor.name,
+        items: receiptItems,
+        totalRecognizedValue: params.grandTotal,
+        notes: "Full receipt upon purchase bill creation",
+      };
+
+      // 3. Create purchase with full receipt and recognized liability
+      const [newPurchase] = await Purchase.create(
+        [
+          {
+            purchaseNumber: params.purchaseNumber,
+            supplierId: params.supplier._id,
+            supplierSnapshot: params.supplierSnapshot,
+            supplierInvoiceNumber: params.supplierInvoiceNumber,
+            supplierInvoiceDate: params.supplierInvoiceDate,
+            purchaseDate: params.purchaseDate,
+            items: params.items,
+            subtotal: params.subtotal,
+            discountAmount: params.totalDiscount,
+            taxAmount: params.totalTax,
+            grandTotal: params.grandTotal,
+            receivedQty: totalReceivedQty,
+            recognizedInvoiceValue: params.grandTotal,
+            amountPaid: params.amountPaid,
+            outstandingAmount,
+            paymentStatus,
+            status: "RECEIVED",
+            receipts: [receiptRecord],
+            amendments: [],
+            notes: params.notes,
+            createdById: new mongoose.Types.ObjectId(actor.id),
+          },
+        ],
+        { session }
+      );
+
+      createdPurchaseId = newPurchase._id.toString();
+
+      // 4. Atomic Supplier Ledger update
+      await Supplier.findByIdAndUpdate(
+        params.supplier._id,
+        {
+          $inc: {
+            totalPurchases: params.grandTotal,
+            totalPaid: params.amountPaid,
+            outstandingBalance: outstandingAmount,
+          },
+        },
+        { session }
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  await logAuditEvent({
+    action: "PURCHASE_INWARD_CONFIRMED" as any,
+    userId: actor.id,
+    userName: actor.name,
+    ipAddress: actor.ip,
+    details: {
+      purchaseId: createdPurchaseId,
+      purchaseNumber: params.purchaseNumber,
+      recognizedValue: params.grandTotal,
+      amountPaid: params.amountPaid,
+    },
+  });
+
+  return getPurchaseById(createdPurchaseId);
+}
+
+/**
+ * Confirms physical goods inward against an existing purchase bill
+ * Supports partial or full receipt with deterministic financial recognition
+ * Enforces native MongoDB transactions and strict database idempotency
+ */
+export async function confirmPurchaseInward(
+  id: string,
+  input: ConfirmInwardInput,
+  actor: ActorContext
+): Promise<IPurchase> {
+  await connectDB();
+
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    throw new Error("Invalid purchase order ID format");
+  }
+
+  const session = await mongoose.startSession();
+
+  try {
+    await session.withTransaction(async () => {
+      const purchase = await Purchase.findById(id).session(session);
+      if (!purchase) {
+        throw new Error("Purchase order not found");
+      }
+
+      if (purchase.status === "CANCELLED") {
+        throw new Error("Cannot inward stock on a cancelled purchase bill");
+      }
+
+      if (purchase.status === "RECEIVED") {
+        throw new Error(`Purchase '${purchase.purchaseNumber}' is already fully received. Duplicate inward rejected.`);
+      }
+
+      let totalNewlyRecognizedValue = 0;
+      let totalNewlyReceivedQty = 0;
+      const receiptItems: any[] = [];
+
+      for (const inwardItem of input.items) {
+        const lineItem = purchase.items.find(
+          (it) => it.productId.toString() === inwardItem.productId
+        );
+        if (!lineItem) {
+          throw new Error(`Product '${inwardItem.productId}' does not exist on this purchase bill`);
+        }
+
+        const remainingOrdered = round2(lineItem.orderedQty - lineItem.receivedQty);
+        if (inwardItem.receivedQty > remainingOrdered) {
+          throw new Error(
+            `Received quantity (${inwardItem.receivedQty}) exceeds remaining ordered quantity (${remainingOrdered}) for product '${lineItem.productSnapshot?.name}'`
+          );
+        }
+
+        // Validate sum of batch quantities equals received quantity
+        const batchSum = inwardItem.batches.reduce((sum, b) => sum + b.quantity, 0);
+        if (round2(batchSum) !== round2(inwardItem.receivedQty)) {
+          throw new Error(
+            `Sum of batch quantities (${batchSum}) must equal received quantity (${inwardItem.receivedQty}) for product '${lineItem.productSnapshot?.name}'`
+          );
+        }
+
+        // Deterministic Financial Allocation:
+        // Final receipt absorbs any rounding remainder so total recognized matches line total exactly
+        let itemRecognizedIncrement = 0;
+        const newCumulativeReceived = round2(lineItem.receivedQty + inwardItem.receivedQty);
+
+        if (newCumulativeReceived === lineItem.orderedQty) {
+          // Final receipt: absorbs exact remainder
+          itemRecognizedIncrement = round2(lineItem.lineTotal - lineItem.recognizedValue);
+        } else {
+          // Partial receipt: proportional allocation
+          itemRecognizedIncrement = round2(
+            (inwardItem.receivedQty / lineItem.orderedQty) * lineItem.lineTotal
+          );
+        }
+
+        // 1. Increment Product Stock atomically
+        await Product.findByIdAndUpdate(
+          lineItem.productId,
+          { $inc: { currentStock: inwardItem.receivedQty } },
+          { session }
+        );
+
+        // 2. Upsert/Increment Batches atomically
+        for (const b of inwardItem.batches) {
+          const existingBatch = await Batch.findOne({
+            productId: lineItem.productId,
+            batchNumber: b.batchNumber.toUpperCase().trim(),
+          }).session(session);
+
+          if (existingBatch) {
+            if (
+              b.expiryDate &&
+              existingBatch.expiryDate &&
+              new Date(b.expiryDate).toISOString() !== new Date(existingBatch.expiryDate).toISOString()
+            ) {
+              throw new Error(
+                `Conflicting expiry date for existing batch '${b.batchNumber}'. Existing: ${existingBatch.expiryDate.toISOString()}, Provided: ${new Date(b.expiryDate).toISOString()}`
+              );
+            }
+            existingBatch.quantity += b.quantity;
+            await existingBatch.save({ session });
+          } else {
+            await Batch.create(
+              [
+                {
+                  productId: lineItem.productId,
+                  batchNumber: b.batchNumber.toUpperCase().trim(),
+                  manufacturingDate: b.manufacturingDate ? new Date(b.manufacturingDate) : undefined,
+                  expiryDate: b.expiryDate ? new Date(b.expiryDate) : undefined,
+                  quantity: b.quantity,
+                  purchasePrice: lineItem.unitPurchasePrice,
+                  status: "ACTIVE",
+                },
+              ],
+              { session }
+            );
+          }
+        }
+
+        // Update line item counters
+        lineItem.receivedQty = newCumulativeReceived;
+        lineItem.recognizedValue = round2(lineItem.recognizedValue + itemRecognizedIncrement);
+
+        totalNewlyReceivedQty = round2(totalNewlyReceivedQty + inwardItem.receivedQty);
+        totalNewlyRecognizedValue = round2(totalNewlyRecognizedValue + itemRecognizedIncrement);
+
+        receiptItems.push({
+          productId: lineItem.productId,
+          receivedQty: inwardItem.receivedQty,
+          recognizedValue: itemRecognizedIncrement,
+          batches: inwardItem.batches,
+        });
+      }
+
+      // Update purchase counters
+      purchase.receivedQty = round2(purchase.receivedQty + totalNewlyReceivedQty);
+      purchase.recognizedInvoiceValue = round2(
+        purchase.recognizedInvoiceValue + totalNewlyRecognizedValue
+      );
+      purchase.outstandingAmount = Math.max(
+        0,
+        round2(purchase.recognizedInvoiceValue - purchase.amountPaid)
+      );
+
+      // Status resolution
+      const allFullyReceived = purchase.items.every(
+        (it) => it.receivedQty >= it.orderedQty
+      );
+      purchase.status = allFullyReceived ? "RECEIVED" : "PARTIALLY_RECEIVED";
+
+      // Payment status resolution
+      if (purchase.amountPaid >= purchase.recognizedInvoiceValue && purchase.recognizedInvoiceValue > 0) {
+        purchase.paymentStatus = "PAID";
+      } else if (purchase.amountPaid > 0) {
+        purchase.paymentStatus = "PARTIALLY_PAID";
+      } else {
+        purchase.paymentStatus = "UNPAID";
+      }
+
+      const receiptCount = (purchase.receipts?.length || 0) + 1;
+      const receiptNumber = `REC-${purchase.purchaseNumber}-${String(receiptCount).padStart(2, "0")}`;
+
+      purchase.receipts.push({
+        receiptNumber,
+        receiptDate: new Date(),
+        receivedById: actor.id as any,
+        receivedByName: actor.name,
+        items: receiptItems,
+        totalRecognizedValue: totalNewlyRecognizedValue,
+        notes: input.notes?.trim(),
+      });
+
+      purchase.updatedById = new mongoose.Types.ObjectId(actor.id);
+      await purchase.save({ session });
+
+      // 3. Increment Supplier Financial Ledger atomically
+      await Supplier.findByIdAndUpdate(
+        purchase.supplierId,
+        {
+          $inc: {
+            totalPurchases: totalNewlyRecognizedValue,
+            outstandingBalance: totalNewlyRecognizedValue,
+          },
+        },
+        { session }
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+
+  await logAuditEvent({
+    action: "PURCHASE_INWARD_CONFIRMED" as any,
+    userId: actor.id,
+    userName: actor.name,
+    ipAddress: actor.ip,
+    details: {
+      purchaseId: id,
+      itemsCount: input.items.length,
+    },
+  });
+
+  return getPurchaseById(id);
+}
+
+/**
+ * Updates a purchase draft (only allowed while in DRAFT status)
  */
 export async function updatePurchaseDraft(
   id: string,
@@ -419,35 +839,7 @@ export async function updatePurchaseDraft(
   }
 
   if (purchase.status !== "DRAFT") {
-    // If attempting to cancel an unreceived purchase
-    if (input.status === "CANCELLED") {
-      return cancelPurchase(id, "Cancelled via update", actor);
-    }
-    throw new Error(`Only DRAFT purchase orders can be modified. This purchase is currently '${purchase.status}'. Use Amendment for confirmed orders.`);
-  }
-
-  // Update supplier if changed
-  if (input.supplierId && input.supplierId !== purchase.supplierId.toString()) {
-    const supplier = await Supplier.findById(input.supplierId);
-    if (!supplier) throw new Error("Selected supplier does not exist");
-    if (supplier.status !== "ACTIVE") throw new Error("Supplier is inactive");
-
-    purchase.supplierId = supplier._id;
-    purchase.supplierSnapshot = {
-      name: supplier.name,
-      contactPerson: supplier.contactPerson,
-      phone: supplier.phone,
-      email: supplier.email,
-      gstin: supplier.gstin,
-      address: supplier.address
-        ? {
-            street: supplier.address.street,
-            city: supplier.address.city,
-            state: supplier.address.state,
-            pincode: supplier.address.pincode,
-          }
-        : undefined,
-    };
+    throw new Error(`Cannot edit purchase in '${purchase.status}' status. Use controlled amendments.`);
   }
 
   if (input.supplierInvoiceNumber) {
@@ -462,18 +854,23 @@ export async function updatePurchaseDraft(
   if (input.status) {
     purchase.status = input.status;
   }
+  if (input.amountPaid !== undefined) {
+    purchase.amountPaid = round2(input.amountPaid);
+  }
 
-  // Re-calculate line items if updated
   if (input.items && input.items.length > 0) {
-    const items: any[] = [];
     let subtotal = 0;
     let totalDiscount = 0;
     let totalTax = 0;
     let grandTotal = 0;
 
+    const items: any[] = [];
+
     for (const itemInput of input.items) {
       const product = await Product.findById(itemInput.productId);
-      if (!product) throw new Error(`Product '${itemInput.productId}' not found`);
+      if (!product) {
+        throw new Error(`Product '${itemInput.productId}' not found`);
+      }
 
       const calc = calculateItemLineValues(
         itemInput.orderedQty,
@@ -499,6 +896,8 @@ export async function updatePurchaseDraft(
         taxRate: round2(itemInput.taxRate || 0),
         taxAmount: calc.tax,
         lineTotal: calc.lineTotal,
+        recognizedValue: 0,
+        batches: itemInput.batches || [],
       });
 
       subtotal = round2(subtotal + calc.taxable);
@@ -533,7 +932,7 @@ export async function updatePurchaseDraft(
 }
 
 /**
- * Cancels an unreceived purchase order
+ * Cancels an unreceived purchase bill
  */
 export async function cancelPurchase(
   id: string,
@@ -551,10 +950,10 @@ export async function cancelPurchase(
     throw new Error("Purchase order is already cancelled");
   }
 
-  // Strictly block cancellation if goods have been received
+  // Strictly block cancellation if goods have been inwarded into physical stock
   if (purchase.receivedQty > 0 || purchase.status === "PARTIALLY_RECEIVED" || purchase.status === "RECEIVED") {
     throw new Error(
-      `Cannot cancel purchase '${purchase.purchaseNumber}' because ${purchase.receivedQty} items have already been received via confirmed GRNs.`
+      `Cannot cancel purchase '${purchase.purchaseNumber}' because ${purchase.receivedQty} items have already been received into stock.`
     );
   }
 
@@ -578,7 +977,7 @@ export async function cancelPurchase(
 }
 
 /**
- * Submits a controlled purchase amendment with quantity floor check
+ * Controlled purchase amendment with Floor Guard constraint
  */
 export async function amendPurchase(
   id: string,
@@ -592,46 +991,49 @@ export async function amendPurchase(
     throw new Error("Purchase order not found");
   }
 
-  if (purchase.status === "CANCELLED" || purchase.status === "DRAFT") {
-    throw new Error(`Cannot amend a ${purchase.status} purchase order. Use standard edit for Drafts.`);
+  if (purchase.status === "CANCELLED") {
+    throw new Error("Cannot amend a cancelled purchase order");
   }
 
   const previousItems = JSON.parse(JSON.stringify(purchase.items));
   const previousGrandTotal = purchase.grandTotal;
 
-  // Build a map of existing received quantities per product
-  const receivedMap = new Map<string, number>();
-  for (const item of purchase.items) {
-    receivedMap.set(item.productId.toString(), item.receivedQty || 0);
+  // Floor Guard Check
+  for (const itemInput of input.items) {
+    const existing = purchase.items.find(
+      (it) => it.productId.toString() === itemInput.productId
+    );
+    if (existing && existing.receivedQty > 0) {
+      if (itemInput.orderedQty < existing.receivedQty) {
+        throw new Error(
+          `Floor Guard: Cannot reduce ordered quantity for '${existing.productSnapshot?.name}' below already received quantity (${existing.receivedQty} ${existing.unit}).`
+        );
+      }
+    }
   }
 
-  // Validate floor rule: revised ordered quantity cannot fall below received quantity
-  const revisedItems: any[] = [];
   let subtotal = 0;
   let totalDiscount = 0;
   let totalTax = 0;
   let grandTotal = 0;
-  let totalReceived = 0;
-  let allFullyReceived = true;
 
-  for (const revisedItem of input.items) {
-    const receivedSoFar = receivedMap.get(revisedItem.productId) || 0;
-    if (revisedItem.orderedQty < receivedSoFar) {
-      const prod = await Product.findById(revisedItem.productId);
-      const prodName = prod ? prod.name : revisedItem.productId;
-      throw new Error(
-        `Cannot reduce ordered quantity for '${prodName}' to ${revisedItem.orderedQty} because ${receivedSoFar} items have already been received.`
-      );
+  const revisedItems: any[] = [];
+
+  for (const itemInput of input.items) {
+    const product = await Product.findById(itemInput.productId);
+    if (!product) {
+      throw new Error(`Product '${itemInput.productId}' not found`);
     }
 
-    const product = await Product.findById(revisedItem.productId);
-    if (!product) throw new Error(`Product '${revisedItem.productId}' not found`);
+    const existing = purchase.items.find(
+      (it) => it.productId.toString() === itemInput.productId
+    );
 
     const calc = calculateItemLineValues(
-      revisedItem.orderedQty,
-      revisedItem.unitPurchasePrice,
-      revisedItem.discountAmount || 0,
-      revisedItem.taxRate || 0
+      itemInput.orderedQty,
+      itemInput.unitPurchasePrice,
+      itemInput.discountAmount || 0,
+      itemInput.taxRate || 0
     );
 
     revisedItems.push({
@@ -643,58 +1045,45 @@ export async function amendPurchase(
         primaryUnit: product.primaryUnit,
         barcode: product.barcode || undefined,
       },
-      orderedQty: revisedItem.orderedQty,
-      receivedQty: receivedSoFar,
+      orderedQty: itemInput.orderedQty,
+      receivedQty: existing ? existing.receivedQty : 0,
       unit: product.primaryUnit,
-      unitPurchasePrice: round2(revisedItem.unitPurchasePrice),
+      unitPurchasePrice: round2(itemInput.unitPurchasePrice),
       discountAmount: calc.discount,
-      taxRate: round2(revisedItem.taxRate || 0),
+      taxRate: round2(itemInput.taxRate || 0),
       taxAmount: calc.tax,
       lineTotal: calc.lineTotal,
+      recognizedValue: existing ? existing.recognizedValue : 0,
+      batches: existing?.batches || [],
     });
 
     subtotal = round2(subtotal + calc.taxable);
     totalDiscount = round2(totalDiscount + calc.discount);
     totalTax = round2(totalTax + calc.tax);
     grandTotal = round2(grandTotal + calc.lineTotal);
-    totalReceived += receivedSoFar;
-
-    if (receivedSoFar < revisedItem.orderedQty) {
-      allFullyReceived = false;
-    }
   }
 
   const amendmentNumber = (purchase.amendments?.length || 0) + 1;
-
-  purchase.amendments.push({
-    amendmentNumber,
-    amendedAt: new Date().toISOString() as any,
-    amendedById: new mongoose.Types.ObjectId(actor.id) as any,
-    amendedByName: actor.name,
-    reason: input.reason.trim(),
-    previousItems,
-    revisedItems,
-    previousGrandTotal,
-    revisedGrandTotal: grandTotal,
-  });
 
   purchase.items = revisedItems as any;
   purchase.subtotal = subtotal;
   purchase.discountAmount = totalDiscount;
   purchase.taxAmount = totalTax;
   purchase.grandTotal = grandTotal;
-  purchase.receivedQty = totalReceived;
+
+  purchase.amendments.push({
+    amendmentNumber,
+    amendedAt: new Date().toISOString(),
+    amendedById: actor.id,
+    amendedByName: actor.name,
+    reason: input.reason.trim(),
+    previousItems,
+    revisedItems: JSON.parse(JSON.stringify(revisedItems)),
+    previousGrandTotal,
+    revisedGrandTotal: grandTotal,
+  });
+
   purchase.updatedById = new mongoose.Types.ObjectId(actor.id);
-
-  // Re-evaluate status
-  if (totalReceived === 0) {
-    purchase.status = "PENDING_RECEIPT";
-  } else if (allFullyReceived) {
-    purchase.status = "RECEIVED";
-  } else {
-    purchase.status = "PARTIALLY_RECEIVED";
-  }
-
   await purchase.save();
 
   await logAuditEvent({
@@ -706,10 +1095,9 @@ export async function amendPurchase(
       purchaseId: purchase._id.toString(),
       purchaseNumber: purchase.purchaseNumber,
       amendmentNumber,
-      reason: input.reason,
+      reason: input.reason.trim(),
       previousGrandTotal,
-      revisedGrandTotal: grandTotal,
-      status: purchase.status,
+      newGrandTotal: grandTotal,
     },
   });
 

@@ -71,7 +71,7 @@ export const NAV_ITEMS: NavItem[] = [
     icon: Truck,
   },
   {
-    title: "Purchase Orders",
+    title: "Purchase Register",
     href: "/purchases",
     icon: ClipboardList,
   },

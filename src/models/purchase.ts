@@ -6,6 +6,7 @@ import type {
   PurchaseProductSnapshot,
   IPurchaseItem,
   IPurchaseAmendment,
+  IPurchaseReceipt,
 } from "@/types/purchase";
 
 export interface IPurchaseDocument extends Document {
@@ -23,8 +24,10 @@ export interface IPurchaseDocument extends Document {
   receivedQty: number;
   recognizedInvoiceValue: number;
   amountPaid: number;
+  outstandingAmount: number;
   paymentStatus: PurchasePaymentStatus;
   status: PurchaseStatus;
+  receipts: IPurchaseReceipt[];
   amendments: IPurchaseAmendment[];
   notes?: string;
   createdById?: mongoose.Types.ObjectId;
@@ -61,6 +64,16 @@ const ProductSnapshotSchema = new Schema(
   { _id: false }
 );
 
+const PurchaseItemBatchSchema = new Schema(
+  {
+    batchNumber: { type: String, required: true, trim: true, uppercase: true },
+    manufacturingDate: { type: Date },
+    expiryDate: { type: Date },
+    quantity: { type: Number, required: true, min: 0.001 },
+  },
+  { _id: false }
+);
+
 const PurchaseItemSchema = new Schema(
   {
     productId: {
@@ -76,7 +89,7 @@ const PurchaseItemSchema = new Schema(
     orderedQty: {
       type: Number,
       required: true,
-      min: [0.001, "Ordered quantity must be greater than zero"],
+      min: [0.001, "Quantity must be greater than zero"],
     },
     receivedQty: {
       type: Number,
@@ -112,6 +125,12 @@ const PurchaseItemSchema = new Schema(
       required: true,
       min: [0, "Line total cannot be negative"],
     },
+    recognizedValue: {
+      type: Number,
+      default: 0,
+      min: [0, "Recognized value cannot be negative"],
+    },
+    batches: [PurchaseItemBatchSchema],
   },
   {
     _id: true,
@@ -122,6 +141,29 @@ const PurchaseItemSchema = new Schema(
       },
     },
   }
+);
+
+const PurchaseReceiptItemSchema = new Schema(
+  {
+    productId: { type: Schema.Types.ObjectId, ref: "Product", required: true },
+    receivedQty: { type: Number, required: true },
+    recognizedValue: { type: Number, required: true },
+    batches: [PurchaseItemBatchSchema],
+  },
+  { _id: false }
+);
+
+const PurchaseReceiptSchema = new Schema(
+  {
+    receiptNumber: { type: String, required: true },
+    receiptDate: { type: Date, default: Date.now },
+    receivedById: { type: Schema.Types.ObjectId, ref: "User", required: true },
+    receivedByName: { type: String, required: true },
+    items: [PurchaseReceiptItemSchema],
+    totalRecognizedValue: { type: Number, required: true },
+    notes: String,
+  },
+  { _id: false }
 );
 
 const AmendmentSchema = new Schema(
@@ -178,7 +220,7 @@ const PurchaseSchema = new Schema<IPurchaseDocument>(
       required: true,
       validate: {
         validator: (items: any[]) => items && items.length > 0,
-        message: "At least one product item is required for a purchase",
+        message: "At least one product item is required for a purchase entry",
       },
     },
     subtotal: {
@@ -216,6 +258,11 @@ const PurchaseSchema = new Schema<IPurchaseDocument>(
       default: 0,
       min: [0, "Amount paid cannot be negative"],
     },
+    outstandingAmount: {
+      type: Number,
+      default: 0,
+      min: [0, "Outstanding amount cannot be negative"],
+    },
     paymentStatus: {
       type: String,
       enum: ["UNPAID", "PARTIALLY_PAID", "PAID"],
@@ -225,17 +272,15 @@ const PurchaseSchema = new Schema<IPurchaseDocument>(
     status: {
       type: String,
       enum: ["DRAFT", "PENDING_RECEIPT", "PARTIALLY_RECEIVED", "RECEIVED", "CANCELLED"],
-      default: "DRAFT",
+      default: "PENDING_RECEIPT",
       index: true,
     },
-    amendments: {
-      type: [AmendmentSchema],
-      default: [],
-    },
+    receipts: [PurchaseReceiptSchema],
+    amendments: [AmendmentSchema],
     notes: {
       type: String,
       trim: true,
-      maxlength: [1000, "Notes cannot exceed 1000 characters"],
+      maxlength: 1000,
     },
     createdById: {
       type: Schema.Types.ObjectId,
@@ -258,18 +303,26 @@ const PurchaseSchema = new Schema<IPurchaseDocument>(
   }
 );
 
-// Enforce unique invoice number per supplier
+// Compound unique index: supplierId + supplierInvoiceNumber
 PurchaseSchema.index(
   { supplierId: 1, supplierInvoiceNumber: 1 },
-  { unique: true }
+  {
+    unique: true,
+    name: "idx_purchases_supplier_invoice_unique",
+  }
 );
 
-// Compound search index
-PurchaseSchema.index({
-  purchaseNumber: "text",
-  supplierInvoiceNumber: "text",
-  "supplierSnapshot.name": "text",
-});
+// Text search index
+PurchaseSchema.index(
+  {
+    purchaseNumber: "text",
+    supplierInvoiceNumber: "text",
+    "supplierSnapshot.name": "text",
+  },
+  {
+    name: "idx_purchases_text_search",
+  }
+);
 
 export const Purchase: Model<IPurchaseDocument> =
   mongoose.models.Purchase || mongoose.model<IPurchaseDocument>("Purchase", PurchaseSchema);

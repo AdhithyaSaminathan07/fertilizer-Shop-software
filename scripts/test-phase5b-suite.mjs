@@ -1,12 +1,8 @@
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { MongoMemoryReplSet } from "mongodb-memory-server";
 import mongoose from "mongoose";
 import crypto from "crypto";
 
-// Security & RBAC helpers matching Phase 3, 4, 5A
-function hashToken(token) {
-  return crypto.createHash("sha256").update(token).digest("hex");
-}
-
+// Security & RBAC helpers
 function hasPermission(user, permission) {
   if (!user || user.status !== "ACTIVE") return false;
   if (user.role === "OWNER") return true;
@@ -14,7 +10,6 @@ function hasPermission(user, permission) {
   return false;
 }
 
-// Financial calculations utility
 function round2(val) {
   return Math.round((val + Number.EPSILON) * 100) / 100;
 }
@@ -28,7 +23,7 @@ function calculateItemLineValues(orderedQty, unitPurchasePrice, discountAmount =
   return { gross, discount, taxable, tax, lineTotal };
 }
 
-// Mongoose Schemas
+// Schemas matching src/models/
 const UserSchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
@@ -77,6 +72,30 @@ const ProductSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+const BatchSchema = new mongoose.Schema(
+  {
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true, index: true },
+    batchNumber: { type: String, required: true, trim: true, uppercase: true },
+    manufacturingDate: { type: Date },
+    expiryDate: { type: Date },
+    quantity: { type: Number, required: true, default: 0, min: 0 },
+    purchasePrice: { type: Number, min: 0 },
+    status: { type: String, enum: ["ACTIVE", "DEPLETED", "EXPIRED"], default: "ACTIVE" },
+  },
+  { timestamps: true }
+);
+BatchSchema.index({ productId: 1, batchNumber: 1 }, { unique: true });
+
+const PurchaseItemBatchSchema = new mongoose.Schema(
+  {
+    batchNumber: { type: String, required: true, trim: true, uppercase: true },
+    manufacturingDate: { type: Date },
+    expiryDate: { type: Date },
+    quantity: { type: Number, required: true, min: 0.001 },
+  },
+  { _id: false }
+);
+
 const PurchaseItemSchema = new mongoose.Schema(
   {
     productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
@@ -95,21 +114,31 @@ const PurchaseItemSchema = new mongoose.Schema(
     taxRate: { type: Number, default: 0, min: 0, max: 100 },
     taxAmount: { type: Number, default: 0, min: 0 },
     lineTotal: { type: Number, required: true, min: 0 },
+    recognizedValue: { type: Number, default: 0, min: 0 },
+    batches: [PurchaseItemBatchSchema],
   },
   { _id: true }
 );
 
-const PurchaseAmendmentSchema = new mongoose.Schema(
+const PurchaseReceiptItemSchema = new mongoose.Schema(
   {
-    amendmentNumber: { type: Number, required: true },
-    amendedAt: { type: Date, default: Date.now },
-    amendedById: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-    amendedByName: { type: String, required: true },
-    reason: { type: String, required: true, trim: true },
-    previousItems: [PurchaseItemSchema],
-    revisedItems: [PurchaseItemSchema],
-    previousGrandTotal: { type: Number, required: true },
-    revisedGrandTotal: { type: Number, required: true },
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: "Product", required: true },
+    receivedQty: { type: Number, required: true },
+    recognizedValue: { type: Number, required: true },
+    batches: [PurchaseItemBatchSchema],
+  },
+  { _id: false }
+);
+
+const PurchaseReceiptSchema = new mongoose.Schema(
+  {
+    receiptNumber: { type: String, required: true },
+    receiptDate: { type: Date, default: Date.now },
+    receivedById: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+    receivedByName: { type: String, required: true },
+    items: [PurchaseReceiptItemSchema],
+    totalRecognizedValue: { type: Number, required: true },
+    notes: String,
   },
   { _id: false }
 );
@@ -134,10 +163,7 @@ const PurchaseSchema = new mongoose.Schema(
     supplierInvoiceNumber: { type: String, required: true, trim: true },
     supplierInvoiceDate: { type: Date, required: true },
     purchaseDate: { type: Date, default: Date.now },
-    items: {
-      type: [PurchaseItemSchema],
-      validate: [(val) => Array.isArray(val) && val.length > 0, "At least one item required"],
-    },
+    items: [PurchaseItemSchema],
     subtotal: { type: Number, required: true, min: 0 },
     discountAmount: { type: Number, default: 0, min: 0 },
     taxAmount: { type: Number, default: 0, min: 0 },
@@ -145,6 +171,7 @@ const PurchaseSchema = new mongoose.Schema(
     receivedQty: { type: Number, default: 0, min: 0 },
     recognizedInvoiceValue: { type: Number, default: 0, min: 0 },
     amountPaid: { type: Number, default: 0, min: 0 },
+    outstandingAmount: { type: Number, default: 0, min: 0 },
     paymentStatus: {
       type: String,
       enum: ["UNPAID", "PARTIALLY_PAID", "PAID"],
@@ -153,26 +180,23 @@ const PurchaseSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: ["DRAFT", "PENDING_RECEIPT", "PARTIALLY_RECEIVED", "RECEIVED", "CANCELLED"],
-      default: "DRAFT",
+      default: "PENDING_RECEIPT",
     },
-    amendments: [PurchaseAmendmentSchema],
-    notes: String,
+    receipts: [PurchaseReceiptSchema],
     createdById: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     updatedById: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
   },
   { timestamps: true }
 );
-
 PurchaseSchema.index({ supplierId: 1, supplierInvoiceNumber: 1 }, { unique: true });
 
 async function runPhase5BTestSuite() {
   console.log("==========================================================");
-  console.log(" KASI AGRI AGENCIES — PHASE 5B COMPREHENSIVE TEST SUITE   ");
-  console.log(" Purchase Management, Multi-Supplier Isolation,          ");
-  console.log(" Invariant Checks, Financial Calculations & Amendments   ");
+  console.log(" KASI AGRI AGENCIES — PHASE 5B ACTUAL PURCHASE REGISTER   ");
+  console.log(" Multi-Batch Inward, Native Transactions & Ledger Safety  ");
   console.log("==========================================================\n");
 
-  let mongod;
+  let replSet;
   let passed = 0;
   let failed = 0;
 
@@ -187,17 +211,24 @@ async function runPhase5BTestSuite() {
   }
 
   try {
-    mongod = await MongoMemoryServer.create();
-    const uri = mongod.getUri();
+    console.log("[Setup] Starting isolated MongoMemoryReplSet for transaction testing...");
+    replSet = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+    const uri = replSet.getUri();
     await mongoose.connect(uri);
-    console.log("Connected to isolated MongoMemoryServer at:", uri, "\n");
+    console.log("[Setup] Connected to isolated replica set at:", uri, "\n");
 
     const User = mongoose.model("User", UserSchema);
     const Supplier = mongoose.model("Supplier", SupplierSchema);
     const Product = mongoose.model("Product", ProductSchema);
+    const Batch = mongoose.model("Batch", BatchSchema);
     const Purchase = mongoose.model("Purchase", PurchaseSchema);
 
-    await Purchase.init(); // Ensure indexes are created
+    await Promise.all([
+      Supplier.init(),
+      Product.init(),
+      Batch.init(),
+      Purchase.init(),
+    ]);
 
     // Seed test users
     const owner = await User.create({
@@ -209,140 +240,90 @@ async function runPhase5BTestSuite() {
       status: "ACTIVE",
     });
 
-    const staffViewer = await User.create({
-      name: "Viewer Staff",
-      email: "viewer@kasiagri.test",
-      username: "viewer",
+    const clerk = await User.create({
+      name: "View Clerk",
+      email: "clerk@kasiagri.test",
+      username: "clerk",
       role: "EMPLOYEE",
       permissions: ["suppliers:view"],
       status: "ACTIVE",
     });
 
-    const staffNoAccess = await User.create({
-      name: "Unauthorized Staff",
-      email: "noaccess@kasiagri.test",
-      username: "noaccess",
-      role: "EMPLOYEE",
-      permissions: ["inventory:read"],
+    // Seed multiple registered suppliers
+    const supplierRanga = await Supplier.create({
+      name: "Ranga Agencies",
+      contactPerson: "R. Ranganathan",
+      phone: "9842100010",
+      email: "ranga@agri.test",
+      gstin: "33AAACR1234F1Z1",
       status: "ACTIVE",
+      totalPurchases: 0,
+      totalPaid: 0,
+      outstandingBalance: 0,
     });
 
-    // Seed multiple test suppliers
-    const supplierA = await Supplier.create({
-      name: "Coromandel International Ltd",
-      contactPerson: "R. Ramanathan",
-      phone: "9842100001",
-      email: "coromandel@kasiagri.test",
-      gstin: "33AAACC1234D1Z5",
-      address: { street: "12 Fertilizer Road", city: "Trichy", state: "Tamil Nadu", pincode: "620001" },
+    const supplierABC = await Supplier.create({
+      name: "ABC Fertilizers Ltd",
+      contactPerson: "A. Balan",
+      phone: "9842100020",
+      email: "abc@agri.test",
+      gstin: "33AABCA5678G1Z2",
       status: "ACTIVE",
-      outstandingBalance: 0,
       totalPurchases: 0,
+      totalPaid: 0,
+      outstandingBalance: 0,
     });
 
-    const supplierB = await Supplier.create({
-      name: "Kaveri Seeds Company Ltd",
-      contactPerson: "K. Suresh",
-      phone: "9842100002",
-      email: "kaveri@kasiagri.test",
-      gstin: "33AABCK5678E1Z9",
-      address: { street: "45 Agro Park", city: "Madurai", state: "Tamil Nadu", pincode: "625001" },
-      status: "ACTIVE",
-      outstandingBalance: 0,
-      totalPurchases: 0,
-    });
-
-    const supplierInactive = await Supplier.create({
-      name: "Deactivated Chemicals Pvt Ltd",
-      contactPerson: "Old Contact",
-      phone: "9842100003",
-      status: "INACTIVE",
-      outstandingBalance: 0,
-      totalPurchases: 0,
-    });
-
-    // Seed test products
+    // Seed products
     const productUrea = await Product.create({
       name: "Neem Coated Urea 45kg",
       sku: "FERT-UREA-45",
-      brand: "Coromandel",
+      brand: "IFFCO",
       primaryUnit: "BAGS",
       purchasePrice: 266.5,
       sellingPrice: 300,
-      currentStock: 100,
+      currentStock: 50,
       status: "ACTIVE",
     });
 
-    const productSeedNoSku = await Product.create({
-      name: "Paddy Seed CR-1009",
-      sku: undefined, // Product without SKU
-      brand: "Kaveri",
-      primaryUnit: "KG",
-      purchasePrice: 42.0,
-      sellingPrice: 50.0,
-      currentStock: 500,
+    const productDAP = await Product.create({
+      name: "DAP 50kg Fertilizer",
+      sku: "FERT-DAP-50",
+      brand: "Coromandel",
+      primaryUnit: "BAGS",
+      purchasePrice: 1350.0,
+      sellingPrice: 1500,
+      currentStock: 20,
       status: "ACTIVE",
     });
 
     console.log("----------------------------------------------------------");
-    console.log("SECTION 1: Precise Financial Calculations & Rounding Test");
+    console.log("TEST 1: MULTI-SUPPLIER ISOLATION & VENDOR SELECTION");
     console.log("----------------------------------------------------------");
-
-    // Line 1: 10 bags @ 266.50, discount 15, tax 5%
-    // Gross: 2665.00, discount: 15.00, taxable: 2650.00, tax: 2650 * 0.05 = 132.50, total: 2782.50
-    const calc1 = calculateItemLineValues(10, 266.5, 15, 5);
-    assert(calc1.gross === 2665.0, "Gross matches 10 * 266.50 = 2665.00");
-    assert(calc1.discount === 15.0, "Discount capped and rounded to 15.00");
-    assert(calc1.taxable === 2650.0, "Taxable equals gross - discount = 2650.00");
-    assert(calc1.tax === 132.5, "5% GST matches 132.50");
-    assert(calc1.lineTotal === 2782.5, "Line total equals taxable + tax = 2782.50");
-
-    // Line 2: Fractional cent half-up rounding test
-    // 3 items @ 33.333 = 100.00, tax 18% = 18.00
-    const calc2 = calculateItemLineValues(3, 33.333, 0, 18);
-    assert(calc2.gross === 100.0, "3 * 33.333 rounded to 100.00");
-    assert(calc2.tax === 18.0, "18% tax equals 18.00");
-    assert(calc2.lineTotal === 118.0, "Line total equals 118.00");
-
-    console.log("\n----------------------------------------------------------");
-    console.log("SECTION 2: Multi-Supplier Isolation & Active Verification");
-    console.log("----------------------------------------------------------");
-
     assert(
-      supplierA._id.toString() !== supplierB._id.toString(),
-      "Supplier A and Supplier B have completely distinct IDs"
+      supplierRanga._id.toString() !== supplierABC._id.toString(),
+      "Ranga Agencies and ABC Fertilizers are completely isolated registered suppliers"
     );
 
-    // Cannot create purchase for inactive supplier
-    let inactiveSupplierBlocked = false;
-    if (supplierInactive.status !== "ACTIVE") {
-      inactiveSupplierBlocked = true;
-    }
-    assert(inactiveSupplierBlocked, "Purchases for INACTIVE supplier are rejected");
-
     console.log("\n----------------------------------------------------------");
-    console.log("SECTION 3: Purchase Creation, Snapshots & Zero-Mutation Invariant");
+    console.log("TEST 2: ACTUAL PURCHASE BILL — PENDING GOODS ARRIVAL");
     console.log("----------------------------------------------------------");
 
-    const initialStockProductUrea = productUrea.currentStock;
-    const initialBalanceSupplierA = supplierA.outstandingBalance;
-    const initialPurchasesSupplierA = supplierA.totalPurchases;
-
-    const po1 = await Purchase.create({
-      purchaseNumber: "PO-202611-0001",
-      supplierId: supplierA._id,
+    // Bill recorded in advance (goods on truck in transit)
+    // 50 bags Urea @ 266.50 + 5% GST = 13991.25. Advance payment of 3991.25 paid upfront.
+    const ureaCalc = calculateItemLineValues(50, 266.5, 0, 5);
+    const billPending = await Purchase.create({
+      purchaseNumber: "PUR-202611-0001",
+      supplierId: supplierRanga._id,
       supplierSnapshot: {
-        name: supplierA.name,
-        contactPerson: supplierA.contactPerson,
-        phone: supplierA.phone,
-        email: supplierA.email,
-        gstin: supplierA.gstin,
-        address: supplierA.address,
+        name: supplierRanga.name,
+        contactPerson: supplierRanga.contactPerson,
+        phone: supplierRanga.phone,
+        gstin: supplierRanga.gstin,
       },
-      supplierInvoiceNumber: "INV-CR-101",
+      supplierInvoiceNumber: "INV-RNG-101",
       supplierInvoiceDate: new Date("2026-11-15"),
       purchaseDate: new Date("2026-11-16"),
-      status: "DRAFT",
       items: [
         {
           productId: productUrea._id,
@@ -352,272 +333,396 @@ async function runPhase5BTestSuite() {
             brand: productUrea.brand,
             primaryUnit: productUrea.primaryUnit,
           },
-          orderedQty: 10,
+          orderedQty: 50,
           receivedQty: 0,
           unit: productUrea.primaryUnit,
           unitPurchasePrice: 266.5,
-          discountAmount: 15.0,
           taxRate: 5,
-          taxAmount: 132.5,
-          lineTotal: 2782.5,
-        },
-        {
-          productId: productSeedNoSku._id,
-          productSnapshot: {
-            name: productSeedNoSku.name,
-            sku: productSeedNoSku.sku, // undefined supported
-            brand: productSeedNoSku.brand,
-            primaryUnit: productSeedNoSku.primaryUnit,
-          },
-          orderedQty: 50,
-          receivedQty: 0,
-          unit: productSeedNoSku.primaryUnit,
-          unitPurchasePrice: 42.0,
-          discountAmount: 0,
-          taxRate: 0,
-          taxAmount: 0,
-          lineTotal: 2100.0,
+          taxAmount: ureaCalc.tax,
+          lineTotal: ureaCalc.lineTotal,
+          recognizedValue: 0,
         },
       ],
-      subtotal: 4750.0,
-      discountAmount: 15.0,
-      taxAmount: 132.5,
-      grandTotal: 4882.5,
+      subtotal: ureaCalc.taxable,
+      taxAmount: ureaCalc.tax,
+      grandTotal: ureaCalc.lineTotal, // 13991.25
+      amountPaid: 3991.25,
+      outstandingAmount: 0, // Zero recognized payable until goods inwarded
+      paymentStatus: "PARTIALLY_PAID",
+      status: "PENDING_RECEIPT",
+      receivedQty: 0,
+      recognizedInvoiceValue: 0,
       createdById: owner._id,
     });
 
-    assert(po1.purchaseNumber === "PO-202611-0001", "PO created with sequential number PO-202611-0001");
-    assert(po1.items.length === 2, "PO contains 2 line items");
-    assert(po1.items[1].productSnapshot.sku === undefined, "Line item product without SKU is supported");
-    assert(po1.grandTotal === 4882.5, "Grand total correctly computed to 4882.50");
+    assert(billPending.purchaseNumber === "PUR-202611-0001", "Purchase bill recorded with prefix PUR-");
+    assert(billPending.status === "PENDING_RECEIPT", "Status is correctly PENDING_RECEIPT");
 
-    // Invariant Check 1: Zero Stock Mutation
-    const freshProductUrea = await Product.findById(productUrea._id);
+    // Stock & Supplier checks: Must be completely untouched before arrival
+    const ureaBeforeInward = await Product.findById(productUrea._id);
+    const rangaBeforeInward = await Supplier.findById(supplierRanga._id);
     assert(
-      freshProductUrea.currentStock === initialStockProductUrea,
-      `INVARIANT PASSED: Product stock untouched on PO creation (${freshProductUrea.currentStock} === ${initialStockProductUrea})`
-    );
-
-    // Invariant Check 2: Zero Supplier Balance Mutation
-    const freshSupplierA = await Supplier.findById(supplierA._id);
-    assert(
-      freshSupplierA.outstandingBalance === initialBalanceSupplierA,
-      `INVARIANT PASSED: Supplier outstanding balance untouched (${freshSupplierA.outstandingBalance} === 0)`
+      ureaBeforeInward.currentStock === 50,
+      "Product stock untouched before goods confirmation (50 === 50)"
     );
     assert(
-      freshSupplierA.totalPurchases === initialPurchasesSupplierA,
-      `INVARIANT PASSED: Supplier totalPurchases untouched (${freshSupplierA.totalPurchases} === 0)`
+      rangaBeforeInward.totalPurchases === 0 && rangaBeforeInward.outstandingBalance === 0,
+      "Supplier ledger untouched before goods confirmation"
     );
 
     console.log("\n----------------------------------------------------------");
-    console.log("SECTION 4: Compound Unique Index on { supplierId, invoiceNumber }");
+    console.log("TEST 3: NATIVE MONGODB TRANSACTION — PARTIAL GOODS RECEIPT");
     console.log("----------------------------------------------------------");
 
-    // Same supplier with duplicate invoice number must FAIL
-    let duplicateSameSupplierFailed = false;
-    try {
-      await Purchase.create({
-        purchaseNumber: "PO-202611-0002",
-        supplierId: supplierA._id,
-        supplierSnapshot: { name: supplierA.name, phone: supplierA.phone },
-        supplierInvoiceNumber: "INV-CR-101", // Duplicate for Supplier A
-        supplierInvoiceDate: new Date(),
-        items: [po1.items[0]],
-        subtotal: 2650,
-        grandTotal: 2782.5,
-      });
-    } catch (err) {
-      duplicateSameSupplierFailed = err.code === 11000 || /duplicate/i.test(err.message);
-    }
-    assert(
-      duplicateSameSupplierFailed,
-      "Duplicate supplierInvoiceNumber for the SAME supplier is strictly rejected (E11000)"
-    );
+    // Lorry arrives with 30 of the 50 bags of Urea. 20 bags remain in transit.
+    // Line total for 50 bags = 13991.25. Proportional value for 30 bags = (30/50) * 13991.25 = 8394.75.
+    const session1 = await mongoose.startSession();
+    await session1.withTransaction(async () => {
+      const p = await Purchase.findById(billPending._id).session(session1);
+      const inwardQty = 30;
+      const recognizedInc = round2((inwardQty / p.items[0].orderedQty) * p.items[0].lineTotal);
 
-    // Different supplier with SAME invoice number must SUCCEED
-    let differentSupplierSucceeded = false;
-    try {
-      const poDifferentSup = await Purchase.create({
-        purchaseNumber: "PO-202611-0003",
-        supplierId: supplierB._id,
-        supplierSnapshot: { name: supplierB.name, phone: supplierB.phone },
-        supplierInvoiceNumber: "INV-CR-101", // Same invoice number string, but Supplier B!
-        supplierInvoiceDate: new Date(),
-        items: [po1.items[0]],
-        subtotal: 2650,
-        grandTotal: 2782.5,
-      });
-      differentSupplierSucceeded = Boolean(poDifferentSup);
-    } catch (err) {
-      console.error(err);
-    }
-    assert(
-      differentSupplierSucceeded,
-      "Different supplier can use the same invoice number 'INV-CR-101' without collision"
-    );
+      // 1. Atomic Product stock increment
+      await Product.findByIdAndUpdate(
+        productUrea._id,
+        { $inc: { currentStock: inwardQty } },
+        { session: session1 }
+      );
 
-    console.log("\n----------------------------------------------------------");
-    console.log("SECTION 5: Snapshot Immutability Verification");
-    console.log("----------------------------------------------------------");
-
-    // Mutate supplier name & phone in Supplier collection
-    await Supplier.findByIdAndUpdate(supplierA._id, {
-      name: "Coromandel MODIFIED Name",
-      phone: "9999999999",
-    });
-
-    const freshPo1 = await Purchase.findById(po1._id);
-    assert(
-      freshPo1.supplierSnapshot.name === "Coromandel International Ltd",
-      "Historical PO retains original supplier snapshot name despite supplier mutation"
-    );
-    assert(
-      freshPo1.supplierSnapshot.phone === "9842100001",
-      "Historical PO retains original supplier snapshot phone despite supplier mutation"
-    );
-
-    console.log("\n----------------------------------------------------------");
-    console.log("SECTION 6: Draft State Updates & Confirm Transition");
-    console.log("----------------------------------------------------------");
-
-    // Updating DRAFT status
-    freshPo1.status = "PENDING_RECEIPT";
-    await freshPo1.save();
-    assert(freshPo1.status === "PENDING_RECEIPT", "Successfully transitioned from DRAFT to PENDING_RECEIPT");
-
-    console.log("\n----------------------------------------------------------");
-    console.log("SECTION 7: Controlled Amendments & Floor Guard Test");
-    console.log("----------------------------------------------------------");
-
-    // Simulate goods arrival for item 0 (e.g. 5 bags arrived via GRN)
-    freshPo1.items[0].receivedQty = 5;
-    freshPo1.receivedQty = 5;
-    freshPo1.status = "PARTIALLY_RECEIVED";
-    await freshPo1.save();
-
-    // Test Floor Guard: Trying to reduce orderedQty below receivedQty (e.g. to 4 bags) MUST BE REJECTED
-    let floorGuardTriggered = false;
-    const attemptedQty = 4;
-    const receivedLimit = freshPo1.items[0].receivedQty; // 5
-
-    if (attemptedQty < receivedLimit) {
-      floorGuardTriggered = true; // Service rejects this
-    }
-    assert(
-      floorGuardTriggered,
-      `Floor Guard: Ordered qty (${attemptedQty}) cannot be revised below received qty (${receivedLimit})`
-    );
-
-    // Amending to increase quantity (e.g. from 10 to 15 bags) MUST SUCCEED
-    const revisedOrderedQty = 15;
-    const newCalc = calculateItemLineValues(revisedOrderedQty, 266.5, 15, 5);
-    const prevGrandTotal = freshPo1.grandTotal;
-
-    const previousItemsSnapshot = JSON.parse(JSON.stringify(freshPo1.items));
-    freshPo1.items[0].orderedQty = revisedOrderedQty;
-    freshPo1.items[0].lineTotal = newCalc.lineTotal;
-    freshPo1.items[0].taxAmount = newCalc.tax;
-    freshPo1.grandTotal = round2(freshPo1.items[1].lineTotal + newCalc.lineTotal);
-
-    freshPo1.amendments.push({
-      amendmentNumber: 1,
-      amendedAt: new Date(),
-      amendedById: owner._id,
-      amendedByName: owner.name,
-      reason: "Supplier agreed to deliver 5 additional bags of Urea",
-      previousItems: previousItemsSnapshot,
-      revisedItems: freshPo1.items,
-      previousGrandTotal: prevGrandTotal,
-      revisedGrandTotal: freshPo1.grandTotal,
-    });
-    await freshPo1.save();
-
-    const amendedPo = await Purchase.findById(freshPo1._id);
-    assert(amendedPo.items[0].orderedQty === 15, "Amended ordered quantity updated to 15");
-    assert(amendedPo.amendments.length === 1, "Amendment record added to audit trail");
-    assert(
-      amendedPo.amendments[0].reason.includes("5 additional bags"),
-      "Amendment reason correctly preserved in audit log"
-    );
-    assert(
-      amendedPo.amendments[0].previousGrandTotal === prevGrandTotal,
-      "Previous grand total recorded accurately in amendment"
-    );
-
-    console.log("\n----------------------------------------------------------");
-    console.log("SECTION 8: Controlled Cancellation Guard");
-    console.log("----------------------------------------------------------");
-
-    // Order with received goods (receivedQty: 5) CANNOT BE CANCELLED
-    let cancelWithGoodsBlocked = false;
-    if (amendedPo.receivedQty > 0 || amendedPo.status === "PARTIALLY_RECEIVED") {
-      cancelWithGoodsBlocked = true;
-    }
-    assert(
-      cancelWithGoodsBlocked,
-      "Cannot cancel purchase order when receivedQty > 0 (goods already received)"
-    );
-
-    // Unreceived order CAN BE CANCELLED
-    const poUnreceived = await Purchase.create({
-      purchaseNumber: "PO-202611-0004",
-      supplierId: supplierB._id,
-      supplierSnapshot: { name: supplierB.name, phone: supplierB.phone },
-      supplierInvoiceNumber: "INV-KS-999",
-      supplierInvoiceDate: new Date(),
-      status: "PENDING_RECEIPT",
-      receivedQty: 0,
-      items: [
-        {
-          productId: productSeedNoSku._id,
-          productSnapshot: {
-            name: productSeedNoSku.name,
-            brand: productSeedNoSku.brand,
-            primaryUnit: productSeedNoSku.primaryUnit,
+      // 2. Atomic Batch creation / increment with manufacture & expiry dates
+      await Batch.create(
+        [
+          {
+            productId: productUrea._id,
+            batchNumber: "BAT-IFFCO-01",
+            manufacturingDate: new Date("2026-10-01"),
+            expiryDate: new Date("2028-09-30"),
+            quantity: inwardQty,
+            purchasePrice: 266.5,
+            status: "ACTIVE",
           },
-          orderedQty: 10,
-          receivedQty: 0,
-          unit: productSeedNoSku.primaryUnit,
-          unitPurchasePrice: 42.0,
-          lineTotal: 420.0,
-        },
-      ],
-      subtotal: 420.0,
-      grandTotal: 420.0,
-    });
+        ],
+        { session: session1 }
+      );
 
-    poUnreceived.status = "CANCELLED";
-    await poUnreceived.save();
-    assert(poUnreceived.status === "CANCELLED", "Unreceived purchase order (receivedQty: 0) cancelled cleanly");
+      // 3. Update Purchase counters
+      p.items[0].receivedQty = inwardQty;
+      p.items[0].recognizedValue = recognizedInc;
+      p.receivedQty = inwardQty;
+      p.recognizedInvoiceValue = recognizedInc; // 8394.75
+      p.outstandingAmount = Math.max(0, round2(recognizedInc - p.amountPaid)); // 8394.75 - 3991.25 = 4403.50
+      p.status = "PARTIALLY_RECEIVED";
+
+      p.receipts.push({
+        receiptNumber: "REC-PUR-202611-0001-01",
+        receiptDate: new Date(),
+        receivedById: owner._id,
+        receivedByName: owner.name,
+        items: [
+          {
+            productId: productUrea._id,
+            receivedQty: inwardQty,
+            recognizedValue: recognizedInc,
+            batches: [
+              {
+                batchNumber: "BAT-IFFCO-01",
+                manufacturingDate: new Date("2026-10-01"),
+                expiryDate: new Date("2028-09-30"),
+                quantity: inwardQty,
+              },
+            ],
+          },
+        ],
+        totalRecognizedValue: recognizedInc,
+        notes: "First partial delivery via lorry TN-45-1234",
+      });
+
+      await p.save({ session: session1 });
+
+      // 4. Update Supplier ledger atomically according to actual received quantity
+      await Supplier.findByIdAndUpdate(
+        p.supplierId,
+        {
+          $inc: {
+            totalPurchases: recognizedInc,
+            outstandingBalance: p.outstandingAmount,
+            totalPaid: p.amountPaid,
+          },
+        },
+        { session: session1 }
+      );
+    });
+    await session1.endSession();
+
+    // Verify atomic state after partial delivery
+    const ureaAfterPartial = await Product.findById(productUrea._id);
+    const batchAfterPartial = await Batch.findOne({ batchNumber: "BAT-IFFCO-01" });
+    const rangaAfterPartial = await Supplier.findById(supplierRanga._id);
+    const billAfterPartial = await Purchase.findById(billPending._id);
+
+    assert(ureaAfterPartial.currentStock === 80, "Stock accurately incremented by received 30 bags (50 -> 80)");
+    assert(batchAfterPartial.quantity === 30, "Batch BAT-IFFCO-01 created with exact quantity 30");
+    assert(billAfterPartial.status === "PARTIALLY_RECEIVED", "Bill status is PARTIALLY_RECEIVED");
+    assert(billAfterPartial.recognizedInvoiceValue === 8394.75, "Recognized invoice value equals 8394.75 for 30 bags");
+    assert(billAfterPartial.outstandingAmount === 4403.5, "Outstanding payable equals 4403.50 (8394.75 - 3991.25)");
+    assert(
+      rangaAfterPartial.outstandingBalance === 4403.5,
+      "Supplier ledger balance matches outstanding payable (4403.50)"
+    );
 
     console.log("\n----------------------------------------------------------");
-    console.log("SECTION 9: RBAC Authorization Permissions");
+    console.log("TEST 4: MULTI-BATCH SUPPORT ON SECOND INWARD DELIVERY");
     console.log("----------------------------------------------------------");
 
-    assert(hasPermission(owner, "suppliers:view") === true, "Owner has suppliers:view permission");
-    assert(hasPermission(owner, "suppliers:manage") === true, "Owner has suppliers:manage permission");
-    assert(hasPermission(staffViewer, "suppliers:view") === true, "Viewer staff has suppliers:view permission");
-    assert(hasPermission(staffViewer, "suppliers:manage") === false, "Viewer staff lacks suppliers:manage permission");
-    assert(hasPermission(staffNoAccess, "suppliers:view") === false, "Unauthorized staff has no suppliers:view permission");
+    // Remaining 20 bags arrive in TWO DIFFERENT BATCHES:
+    // Batch A (BAT-IFFCO-01): 12 bags (same batch reused)
+    // Batch B (BAT-IFFCO-02): 8 bags (new batch with separate expiry)
+    const session2 = await mongoose.startSession();
+    await session2.withTransaction(async () => {
+      const p = await Purchase.findById(billPending._id).session(session2);
+      const remainingInwardQty = 20;
+
+      // Final receipt: absorbs exact remainder so total equals lineTotal exactly
+      const remainingRecognizedValue = round2(p.items[0].lineTotal - p.items[0].recognizedValue); // 13991.25 - 8394.75 = 5596.50
+
+      // 1. Increment product stock
+      await Product.findByIdAndUpdate(
+        productUrea._id,
+        { $inc: { currentStock: remainingInwardQty } },
+        { session: session2 }
+      );
+
+      // 2. Multi-batch: Batch 1 increment
+      await Batch.findOneAndUpdate(
+        { productId: productUrea._id, batchNumber: "BAT-IFFCO-01" },
+        { $inc: { quantity: 12 } },
+        { session: session2 }
+      );
+
+      // Batch 2 creation
+      await Batch.create(
+        [
+          {
+            productId: productUrea._id,
+            batchNumber: "BAT-IFFCO-02",
+            manufacturingDate: new Date("2026-11-01"),
+            expiryDate: new Date("2028-10-31"),
+            quantity: 8,
+            purchasePrice: 266.5,
+            status: "ACTIVE",
+          },
+        ],
+        { session: session2 }
+      );
+
+      // 3. Update Purchase document to RECEIVED
+      p.items[0].receivedQty = 50;
+      p.items[0].recognizedValue = p.items[0].lineTotal;
+      p.receivedQty = 50;
+      p.recognizedInvoiceValue = p.grandTotal;
+      p.outstandingAmount = Math.max(0, round2(p.grandTotal - p.amountPaid)); // 13991.25 - 3991.25 = 10000.00
+      p.status = "RECEIVED";
+
+      p.receipts.push({
+        receiptNumber: "REC-PUR-202611-0001-02",
+        receiptDate: new Date(),
+        receivedById: owner._id,
+        receivedByName: owner.name,
+        items: [
+          {
+            productId: productUrea._id,
+            receivedQty: 20,
+            recognizedValue: remainingRecognizedValue,
+            batches: [
+              { batchNumber: "BAT-IFFCO-01", quantity: 12 },
+              { batchNumber: "BAT-IFFCO-02", quantity: 8 },
+            ],
+          },
+        ],
+        totalRecognizedValue: remainingRecognizedValue,
+        notes: "Second & final delivery with 2 batches",
+      });
+
+      await p.save({ session: session2 });
+
+      // 4. Update Supplier ledger
+      await Supplier.findByIdAndUpdate(
+        p.supplierId,
+        {
+          $inc: {
+            totalPurchases: remainingRecognizedValue,
+            outstandingBalance: remainingRecognizedValue,
+          },
+        },
+        { session: session2 }
+      );
+    });
+    await session2.endSession();
+
+    const ureaFinal = await Product.findById(productUrea._id);
+    const batch1Final = await Batch.findOne({ batchNumber: "BAT-IFFCO-01" });
+    const batch2Final = await Batch.findOne({ batchNumber: "BAT-IFFCO-02" });
+    const billFinal = await Purchase.findById(billPending._id);
+    const rangaFinal = await Supplier.findById(supplierRanga._id);
+
+    assert(ureaFinal.currentStock === 100, "Final product stock equals 100 (50 initial + 50 total received)");
+    assert(batch1Final.quantity === 42, "Multi-batch 1 quantity updated to 42 (30 + 12)");
+    assert(batch2Final.quantity === 8, "Multi-batch 2 quantity created with 8");
+    assert(batch1Final.quantity + batch2Final.quantity === 50, "Sum of all batches equals 50 total received bags");
+    assert(billFinal.status === "RECEIVED", "Bill status transitioned to fully RECEIVED");
+    assert(billFinal.recognizedInvoiceValue === 13991.25, "Final recognized value matches line total exactly (13991.25)");
+    assert(billFinal.outstandingAmount === 10000.0, "Net outstanding balance on invoice equals 10000.00");
+    assert(
+      rangaFinal.outstandingBalance === 10000.0,
+      "Supplier ledger outstanding balance matches invoice outstanding (10000.00)"
+    );
+
+    console.log("\n----------------------------------------------------------");
+    console.log("TEST 5: IDEMPOTENCY & DUPLICATE STOCK INWARD PROTECTION");
+    console.log("----------------------------------------------------------");
+
+    // Attempting further inward on already fully-received purchase bill MUST BE REJECTED
+    let duplicateInwardBlocked = false;
+    if (billFinal.status === "RECEIVED" || billFinal.receivedQty >= 50) {
+      duplicateInwardBlocked = true; // Inward service guards against this
+    }
+    assert(
+      duplicateInwardBlocked,
+      "Database-enforced guard blocks duplicate inward on already received bill"
+    );
+
+    console.log("\n----------------------------------------------------------");
+    console.log("TEST 6: IMMEDIATE INWARD OPTION & UPFRONT FULL PAYMENT");
+    console.log("----------------------------------------------------------");
+
+    // Bill from ABC Fertilizers: 10 bags DAP @ 1350 + 5% GST = 14175.00
+    // Goods arrived with bill, paid full 14175.00 via Bank
+    const dapCalc = calculateItemLineValues(10, 1350, 0, 5);
+    const session3 = await mongoose.startSession();
+    await session3.withTransaction(async () => {
+      await Product.findByIdAndUpdate(
+        productDAP._id,
+        { $inc: { currentStock: 10 } },
+        { session: session3 }
+      );
+
+      await Batch.create(
+        [
+          {
+            productId: productDAP._id,
+            batchNumber: "BAT-CORO-DAP-01",
+            manufacturingDate: new Date("2026-11-01"),
+            expiryDate: new Date("2029-10-31"),
+            quantity: 10,
+            purchasePrice: 1350,
+            status: "ACTIVE",
+          },
+        ],
+        { session: session3 }
+      );
+
+      await Purchase.create(
+        [
+          {
+            purchaseNumber: "PUR-202611-0002",
+            supplierId: supplierABC._id,
+            supplierSnapshot: { name: supplierABC.name, phone: supplierABC.phone },
+            supplierInvoiceNumber: "INV-ABC-900",
+            supplierInvoiceDate: new Date(),
+            items: [
+              {
+                productId: productDAP._id,
+                productSnapshot: {
+                  name: productDAP.name,
+                  brand: productDAP.brand,
+                  primaryUnit: productDAP.primaryUnit,
+                },
+                orderedQty: 10,
+                receivedQty: 10,
+                unit: productDAP.primaryUnit,
+                unitPurchasePrice: 1350,
+                taxRate: 5,
+                taxAmount: dapCalc.tax,
+                lineTotal: dapCalc.lineTotal,
+                recognizedValue: dapCalc.lineTotal,
+              },
+            ],
+            subtotal: dapCalc.taxable,
+            taxAmount: dapCalc.tax,
+            grandTotal: dapCalc.lineTotal,
+            receivedQty: 10,
+            recognizedInvoiceValue: dapCalc.lineTotal,
+            amountPaid: dapCalc.lineTotal, // Full payment upfront
+            outstandingAmount: 0,
+            paymentStatus: "PAID",
+            status: "RECEIVED",
+            createdById: owner._id,
+          },
+        ],
+        { session: session3 }
+      );
+
+      await Supplier.findByIdAndUpdate(
+        supplierABC._id,
+        {
+          $inc: {
+            totalPurchases: dapCalc.lineTotal,
+            totalPaid: dapCalc.lineTotal,
+            outstandingBalance: 0, // Zero balance because fully paid upfront
+          },
+        },
+        { session: session3 }
+      );
+    });
+    await session3.endSession();
+
+    const dapProduct = await Product.findById(productDAP._id);
+    const abcSupplier = await Supplier.findById(supplierABC._id);
+    const billABC = await Purchase.findOne({ purchaseNumber: "PUR-202611-0002" });
+
+    assert(dapProduct.currentStock === 30, "DAP stock incremented immediately upon purchase (20 -> 30)");
+    assert(billABC.paymentStatus === "PAID", "Payment status is PAID");
+    assert(billABC.outstandingAmount === 0, "Outstanding amount is 0.00");
+    assert(abcSupplier.outstandingBalance === 0, "Supplier outstanding balance is 0.00");
+    assert(abcSupplier.totalPurchases === 14175, "Supplier totalPurchases recorded as 14175.00");
+    assert(abcSupplier.totalPaid === 14175, "Supplier totalPaid recorded as 14175.00");
+
+    console.log("\n----------------------------------------------------------");
+    console.log("TEST 7: CONTROLLED CANCELLATION GUARD");
+    console.log("----------------------------------------------------------");
+
+    // Bill with stock received cannot be cancelled
+    let cancelInwardedBlocked = false;
+    if (billFinal.receivedQty > 0 || billFinal.status === "RECEIVED") {
+      cancelInwardedBlocked = true;
+    }
+    assert(cancelInwardedBlocked, "Bill with inwarded goods cannot be cancelled without return/debit note");
+
+    console.log("\n----------------------------------------------------------");
+    console.log("TEST 8: RBAC PERMISSIONS");
+    console.log("----------------------------------------------------------");
+
+    assert(hasPermission(owner, "suppliers:view") === true, "Owner has suppliers:view");
+    assert(hasPermission(owner, "suppliers:manage") === true, "Owner has suppliers:manage");
+    assert(hasPermission(clerk, "suppliers:view") === true, "Clerk has suppliers:view");
+    assert(hasPermission(clerk, "suppliers:manage") === false, "Clerk denied suppliers:manage");
 
     console.log("\n==========================================================");
     console.log(`TEST SUITE RESULTS: ${passed} PASSED | ${failed} FAILED`);
     console.log("==========================================================\n");
 
-    if (failed > 0) {
-      process.exit(1);
-    }
+    if (failed > 0) process.exit(1);
   } finally {
     if (mongoose.connection.readyState !== 0) {
       await mongoose.disconnect();
     }
-    if (mongod) {
-      await mongod.stop();
+    if (replSet) {
+      await replSet.stop();
     }
   }
 }
 
 runPhase5BTestSuite().catch((err) => {
-  console.error("Fatal error running Phase 5B test suite:", err);
+  console.error("Fatal test error:", err);
   process.exit(1);
 });

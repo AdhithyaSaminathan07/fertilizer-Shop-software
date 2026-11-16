@@ -2,9 +2,41 @@ import { z } from "zod";
 
 const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
 
+export const purchaseItemBatchInputSchema = z
+  .object({
+    batchNumber: z.string().min(1, "Batch number is required").max(50).trim().toUpperCase(),
+    manufacturingDate: z
+      .string()
+      .refine((val) => !val || !isNaN(Date.parse(val)), {
+        message: "Valid manufacturing date is required",
+      })
+      .optional()
+      .or(z.literal("")),
+    expiryDate: z
+      .string()
+      .refine((val) => !val || !isNaN(Date.parse(val)), {
+        message: "Valid expiry date is required",
+      })
+      .optional()
+      .or(z.literal("")),
+    quantity: z.number().positive("Batch quantity must be greater than zero"),
+  })
+  .refine(
+    (data) => {
+      if (data.manufacturingDate && data.expiryDate) {
+        return new Date(data.manufacturingDate) <= new Date(data.expiryDate);
+      }
+      return true;
+    },
+    {
+      message: "Expiry date must be on or after manufacturing date",
+      path: ["expiryDate"],
+    }
+  );
+
 export const purchaseItemInputSchema = z.object({
   productId: z.string().regex(OBJECT_ID_REGEX, "Valid product selection is required"),
-  orderedQty: z.number().positive("Ordered quantity must be greater than zero"),
+  orderedQty: z.number().positive("Purchased quantity must be greater than zero"),
   unitPurchasePrice: z.number().min(0, "Unit purchase price cannot be negative"),
   discountAmount: z.number().min(0, "Discount cannot be negative").default(0),
   taxRate: z
@@ -12,6 +44,7 @@ export const purchaseItemInputSchema = z.object({
     .min(0, "Tax rate cannot be negative")
     .max(100, "Tax rate cannot exceed 100%")
     .default(0),
+  batches: z.array(purchaseItemBatchInputSchema).optional(),
 });
 
 export const createPurchaseSchema = z.object({
@@ -32,8 +65,10 @@ export const createPurchaseSchema = z.object({
     .optional(),
   items: z
     .array(purchaseItemInputSchema)
-    .min(1, "At least one product item is required for a purchase order"),
-  status: z.enum(["DRAFT", "PENDING_RECEIPT"]).default("DRAFT"),
+    .min(1, "At least one product item is required for a purchase entry"),
+  status: z.enum(["DRAFT", "PENDING_RECEIPT", "RECEIVED"]).default("PENDING_RECEIPT"),
+  amountPaid: z.number().min(0, "Amount paid cannot be negative").default(0),
+  receiveNow: z.boolean().default(false), // Immediate stock inward flag
   notes: z
     .string()
     .max(1000, "Notes cannot exceed 1000 characters")
@@ -60,7 +95,23 @@ export const updatePurchaseDraftSchema = z.object({
     .array(purchaseItemInputSchema)
     .min(1, "At least one product item is required")
     .optional(),
+  amountPaid: z.number().min(0).optional(),
   status: z.enum(["DRAFT", "PENDING_RECEIPT", "CANCELLED"]).optional(),
+  notes: z.string().max(1000).trim().optional().or(z.literal("")),
+});
+
+export const inwardItemInputSchema = z.object({
+  productId: z.string().regex(OBJECT_ID_REGEX, "Valid product selection is required"),
+  receivedQty: z.number().positive("Received quantity must be greater than zero"),
+  batches: z
+    .array(purchaseItemBatchInputSchema)
+    .min(1, "At least one batch must be specified for received stock"),
+});
+
+export const confirmInwardSchema = z.object({
+  items: z
+    .array(inwardItemInputSchema)
+    .min(1, "At least one product item must be received in this receipt"),
   notes: z.string().max(1000).trim().optional().or(z.literal("")),
 });
 
@@ -79,3 +130,5 @@ export type CreatePurchaseInput = z.infer<typeof createPurchaseSchema>;
 export type UpdatePurchaseDraftInput = z.infer<typeof updatePurchaseDraftSchema>;
 export type AmendPurchaseInput = z.infer<typeof amendPurchaseSchema>;
 export type PurchaseItemInput = z.infer<typeof purchaseItemInputSchema>;
+export type PurchaseItemBatchInput = z.infer<typeof purchaseItemBatchInputSchema>;
+export type ConfirmInwardInput = z.infer<typeof confirmInwardSchema>;

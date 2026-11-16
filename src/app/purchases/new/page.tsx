@@ -16,6 +16,10 @@ import {
   Calendar,
   Layers,
   Sparkles,
+  CreditCard,
+  Truck,
+  Box,
+  Clock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,6 +36,13 @@ interface ProductOption {
   purchasePrice?: number;
 }
 
+interface FormBatch {
+  batchNumber: string;
+  manufacturingDate?: string;
+  expiryDate?: string;
+  quantity: number;
+}
+
 interface FormItem {
   id: string; // client-side unique key
   productId: string;
@@ -42,6 +53,7 @@ interface FormItem {
   unitPurchasePrice: number;
   discountAmount: number;
   taxRate: number;
+  batches: FormBatch[];
 }
 
 function round2(val: number): number {
@@ -65,6 +77,7 @@ export default function NewPurchasePage() {
   const [purchaseDate, setPurchaseDate] = useState(
     new Date().toISOString().split("T")[0]
   );
+  const [amountPaid, setAmountPaid] = useState<number>(0);
   const [notes, setNotes] = useState("");
 
   const [items, setItems] = useState<FormItem[]>([
@@ -78,6 +91,7 @@ export default function NewPurchasePage() {
       unitPurchasePrice: 0,
       discountAmount: 0,
       taxRate: 5,
+      batches: [{ batchNumber: "", quantity: 1 }],
     },
   ]);
 
@@ -141,7 +155,7 @@ export default function NewPurchasePage() {
   function handleItemChange(
     itemId: string,
     field: keyof FormItem,
-    value: string | number
+    value: any
   ) {
     setItems((prev) =>
       prev.map((item) => {
@@ -169,6 +183,7 @@ export default function NewPurchasePage() {
         unitPurchasePrice: 0,
         discountAmount: 0,
         taxRate: 5,
+        batches: [{ batchNumber: "", quantity: 1 }],
       },
     ]);
   }
@@ -178,7 +193,58 @@ export default function NewPurchasePage() {
     setItems((prev) => prev.filter((item) => item.id !== itemId));
   }
 
-  // Calculate live line values and grand totals
+  // Batch handlers
+  function handleAddBatch(itemId: string) {
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.id === itemId) {
+          return {
+            ...item,
+            batches: [
+              ...item.batches,
+              { batchNumber: "", quantity: 1 },
+            ],
+          };
+        }
+        return item;
+      })
+    );
+  }
+
+  function handleRemoveBatch(itemId: string, batchIdx: number) {
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.id === itemId && item.batches.length > 1) {
+          return {
+            ...item,
+            batches: item.batches.filter((_, idx) => idx !== batchIdx),
+          };
+        }
+        return item;
+      })
+    );
+  }
+
+  function handleBatchChange(
+    itemId: string,
+    batchIdx: number,
+    field: keyof FormBatch,
+    val: any
+  ) {
+    setItems((prev) =>
+      prev.map((item) => {
+        if (item.id === itemId) {
+          const updatedBatches = item.batches.map((b, idx) =>
+            idx === batchIdx ? { ...b, [field]: val } : b
+          );
+          return { ...item, batches: updatedBatches };
+        }
+        return item;
+      })
+    );
+  }
+
+  // Calculations
   const itemCalculations = items.map((item) => {
     const gross = round2(item.orderedQty * item.unitPurchasePrice);
     const discount = Math.min(gross, round2(item.discountAmount || 0));
@@ -198,8 +264,10 @@ export default function NewPurchasePage() {
     { taxable: 0, discount: 0, tax: 0, grandTotal: 0 }
   );
 
+  const outstanding = Math.max(0, round2(totals.grandTotal - (amountPaid || 0)));
+
   // Submit Handler
-  async function handleSubmit(targetStatus: "DRAFT" | "PENDING_RECEIPT") {
+  async function handleSubmit(receiveNow: boolean) {
     setErrorMessage("");
 
     if (!selectedSupplierId) {
@@ -217,7 +285,7 @@ export default function NewPurchasePage() {
       return;
     }
 
-    // Validate items
+    // Validate items & batches
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       if (!it.productId) {
@@ -232,6 +300,36 @@ export default function NewPurchasePage() {
         setErrorMessage(`Unit price for line #${i + 1} cannot be negative.`);
         return;
       }
+
+      // If immediate inward, batches are required with batchNumber
+      if (receiveNow) {
+        let batchTotal = 0;
+        for (let bIdx = 0; bIdx < it.batches.length; bIdx++) {
+          const b = it.batches[bIdx];
+          if (!b.batchNumber.trim()) {
+            setErrorMessage(`Batch number is required for line #${i + 1}, batch #${bIdx + 1} when confirming inward stock.`);
+            return;
+          }
+          if (b.quantity <= 0) {
+            setErrorMessage(`Batch quantity must be greater than 0 on line #${i + 1}.`);
+            return;
+          }
+          if (b.manufacturingDate && b.expiryDate) {
+            if (new Date(b.manufacturingDate) > new Date(b.expiryDate)) {
+              setErrorMessage(`Expiry date must be after manufacturing date on line #${i + 1}, batch ${b.batchNumber}.`);
+              return;
+            }
+          }
+          batchTotal += b.quantity;
+        }
+
+        if (round2(batchTotal) !== round2(it.orderedQty)) {
+          setErrorMessage(
+            `Sum of batch quantities (${batchTotal}) must equal total line quantity (${it.orderedQty}) for product '${it.productName}'.`
+          );
+          return;
+        }
+      }
     }
 
     setSubmitting(true);
@@ -241,7 +339,9 @@ export default function NewPurchasePage() {
         supplierInvoiceNumber: supplierInvoiceNumber.trim(),
         supplierInvoiceDate: new Date(supplierInvoiceDate).toISOString(),
         purchaseDate: purchaseDate ? new Date(purchaseDate).toISOString() : undefined,
-        status: targetStatus,
+        status: receiveNow ? "RECEIVED" : "PENDING_RECEIPT",
+        amountPaid: Number(amountPaid || 0),
+        receiveNow,
         notes: notes.trim() || undefined,
         items: items.map((it) => ({
           productId: it.productId,
@@ -249,6 +349,14 @@ export default function NewPurchasePage() {
           unitPurchasePrice: Number(it.unitPurchasePrice),
           discountAmount: Number(it.discountAmount || 0),
           taxRate: Number(it.taxRate || 0),
+          batches: it.batches
+            .filter((b) => b.batchNumber.trim())
+            .map((b) => ({
+              batchNumber: b.batchNumber.trim().toUpperCase(),
+              manufacturingDate: b.manufacturingDate ? new Date(b.manufacturingDate).toISOString() : undefined,
+              expiryDate: b.expiryDate ? new Date(b.expiryDate).toISOString() : undefined,
+              quantity: Number(b.quantity),
+            })),
         })),
       };
 
@@ -260,24 +368,24 @@ export default function NewPurchasePage() {
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error?.message || data.message || "Failed to create purchase order");
+        throw new Error(data.error?.message || data.message || "Failed to record purchase entry");
       }
 
-      const createdId = data.data?.purchase?._id;
+      const createdId = data.data?.purchase?._id || data.data?.purchase?.id;
       if (createdId) {
         router.push(`/purchases/${createdId}`);
       } else {
         router.push("/purchases");
       }
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : "Failed to create purchase order");
+      setErrorMessage(err instanceof Error ? err.message : "Failed to record purchase entry");
       setSubmitting(false);
     }
   }
 
   return (
     <div className="space-y-6 pb-16 max-w-6xl mx-auto">
-      {/* Top Breadcrumb & Title */}
+      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="flex items-center gap-3">
           <Link href="/purchases">
@@ -287,10 +395,10 @@ export default function NewPurchasePage() {
           </Link>
           <div>
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-              Create Purchase Order
+              Record Inward Purchase Bill
             </h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Record incoming purchase order against a registered supplier.
+              Record actual supplier invoice, batch inventory details, and initial payment.
             </p>
           </div>
         </div>
@@ -300,19 +408,19 @@ export default function NewPurchasePage() {
             variant="outline"
             size="sm"
             disabled={submitting}
-            onClick={() => handleSubmit("DRAFT")}
-            leftIcon={<Save className="w-4 h-4" />}
+            onClick={() => handleSubmit(false)}
+            leftIcon={<Clock className="w-4 h-4" />}
           >
-            Save Draft
+            Save (Pending Goods)
           </Button>
           <Button
             variant="primary"
             size="sm"
             loading={submitting}
-            onClick={() => handleSubmit("PENDING_RECEIPT")}
+            onClick={() => handleSubmit(true)}
             leftIcon={<CheckCircle2 className="w-4 h-4" />}
           >
-            Confirm Order
+            Confirm & Inward Stock Now
           </Button>
         </div>
       </div>
@@ -322,7 +430,7 @@ export default function NewPurchasePage() {
         <div className="p-4 bg-rose-50 border border-rose-200 rounded-lg flex items-start gap-3 text-rose-800 text-sm">
           <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
           <div className="flex-1">
-            <p className="font-semibold">Unable to create purchase order</p>
+            <p className="font-semibold">Unable to record purchase bill</p>
             <p className="mt-0.5 text-rose-700">{errorMessage}</p>
           </div>
         </div>
@@ -335,27 +443,27 @@ export default function NewPurchasePage() {
           <CardHeader className="p-0 pb-4 border-b border-slate-100 flex-row items-center justify-between">
             <CardTitle className="text-base font-semibold text-slate-900 flex items-center gap-2">
               <Building2 className="w-4 h-4 text-[#176B3A]" />
-              Supplier Details
+              Supplier Information
             </CardTitle>
             <Link
               href="/suppliers"
               className="text-xs text-[#176B3A] hover:underline font-medium"
             >
-              + Register New Supplier
+              + Manage Suppliers
             </Link>
           </CardHeader>
 
           <CardContent className="p-0 pt-4 space-y-4">
             <div>
               <label htmlFor="supplier-select" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                Select Active Supplier *
+                Select Supplier *
               </label>
               <select
                 id="supplier-select"
                 value={selectedSupplierId}
                 onChange={(e) => setSelectedSupplierId(e.target.value)}
                 disabled={dataLoading}
-                aria-label="Select Active Supplier"
+                aria-label="Select Supplier"
                 className="w-full h-10 px-3 rounded-lg border border-slate-200 bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A] focus:border-transparent"
               >
                 <option value="">-- Choose a Supplier --</option>
@@ -368,11 +476,6 @@ export default function NewPurchasePage() {
                   );
                 })}
               </select>
-              {suppliers.length === 0 && !dataLoading && (
-                <p className="text-xs text-amber-600 mt-1">
-                  No active suppliers found. Please register an active supplier first.
-                </p>
-              )}
             </div>
 
             {/* Selected Supplier Preview Card */}
@@ -402,19 +505,6 @@ export default function NewPurchasePage() {
                     </span>
                   </div>
                 </div>
-                {selectedSupplier.address && (
-                  <div className="text-slate-500 pt-1 border-t border-slate-200/60 mt-1">
-                    <span>Address: </span>
-                    {[
-                      selectedSupplier.address.street,
-                      selectedSupplier.address.city,
-                      selectedSupplier.address.state,
-                      selectedSupplier.address.pincode,
-                    ]
-                      .filter(Boolean)
-                      .join(", ")}
-                  </div>
-                )}
               </div>
             )}
           </CardContent>
@@ -425,7 +515,7 @@ export default function NewPurchasePage() {
           <CardHeader className="p-0 pb-4 border-b border-slate-100">
             <CardTitle className="text-base font-semibold text-slate-900 flex items-center gap-2">
               <FileText className="w-4 h-4 text-[#176B3A]" />
-              Invoice Metadata
+              Invoice Particulars
             </CardTitle>
           </CardHeader>
 
@@ -445,7 +535,7 @@ export default function NewPurchasePage() {
 
             <div>
               <label htmlFor="invoice-date-input" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                Invoice Date *
+                Supplier Invoice Date *
               </label>
               <Input
                 id="invoice-date-input"
@@ -457,11 +547,11 @@ export default function NewPurchasePage() {
             </div>
 
             <div>
-              <label htmlFor="po-date-input" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
-                Purchase Order Date
+              <label htmlFor="purchase-date-input" className="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1">
+                Purchase / Entry Date
               </label>
               <Input
-                id="po-date-input"
+                id="purchase-date-input"
                 type="date"
                 value={purchaseDate}
                 onChange={(e) => setPurchaseDate(e.target.value)}
@@ -472,16 +562,16 @@ export default function NewPurchasePage() {
         </Card>
       </div>
 
-      {/* Section 2: Line Items */}
+      {/* Section 2: Line Items & Multiple Batches */}
       <Card className="border border-slate-200/80 shadow-sm p-4 sm:p-5">
         <CardHeader className="p-0 pb-4 border-b border-slate-100 flex-row items-center justify-between">
           <div>
             <CardTitle className="text-base font-semibold text-slate-900 flex items-center gap-2">
               <Layers className="w-4 h-4 text-[#176B3A]" />
-              Purchase Line Items
+              Purchased Products & Batches
             </CardTitle>
             <p className="text-xs text-slate-500 mt-0.5">
-              Specify ordered quantities using each product&apos;s primary unit. Prices exclude or include explicit GST.
+              Record invoiced quantities, cost price, GST, and multiple batches per product.
             </p>
           </div>
           <Button
@@ -490,25 +580,25 @@ export default function NewPurchasePage() {
             onClick={handleAddItem}
             leftIcon={<Plus className="w-4 h-4" />}
           >
-            Add Line Item
+            Add Product
           </Button>
         </CardHeader>
 
-        <CardContent className="p-0 pt-4 space-y-4">
+        <CardContent className="p-0 pt-4 space-y-6">
           {items.map((item, index) => {
             const calc = itemCalculations[index];
 
             return (
               <div
                 key={item.id}
-                className="p-4 rounded-lg border border-slate-200/80 bg-slate-50/50 space-y-3 relative group"
+                className="p-4 rounded-xl border border-slate-200/90 bg-slate-50/50 space-y-4 relative"
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <span className="w-6 h-6 rounded-full bg-emerald-100 text-[#176B3A] text-xs font-bold flex items-center justify-center">
                       {index + 1}
                     </span>
-                    <span className="text-xs font-semibold text-slate-700">
+                    <span className="text-xs font-semibold text-slate-800">
                       Product #{index + 1}
                     </span>
                     {item.primaryUnit && (
@@ -530,15 +620,14 @@ export default function NewPurchasePage() {
                   )}
                 </div>
 
-                {/* Grid Inputs */}
+                {/* Main Product Inputs */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3">
-                  {/* Product selector */}
                   <div className="sm:col-span-2">
-                    <label htmlFor={`product-select-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
+                    <label htmlFor={`prod-sel-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
                       Product *
                     </label>
                     <select
-                      id={`product-select-${item.id}`}
+                      id={`prod-sel-${item.id}`}
                       value={item.productId}
                       onChange={(e) => handleProductChange(item.id, e.target.value)}
                       aria-label="Select Product"
@@ -553,13 +642,12 @@ export default function NewPurchasePage() {
                     </select>
                   </div>
 
-                  {/* Ordered Quantity */}
                   <div>
-                    <label htmlFor={`ordered-qty-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
+                    <label htmlFor={`qty-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
                       Qty ({item.primaryUnit || "Unit"}) *
                     </label>
                     <Input
-                      id={`ordered-qty-${item.id}`}
+                      id={`qty-${item.id}`}
                       type="number"
                       min="0.01"
                       step="any"
@@ -571,13 +659,12 @@ export default function NewPurchasePage() {
                     />
                   </div>
 
-                  {/* Unit Purchase Price */}
                   <div>
-                    <label htmlFor={`unit-price-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                      Unit Price (₹) *
+                    <label htmlFor={`price-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
+                      Cost Price (₹) *
                     </label>
                     <Input
-                      id={`unit-price-${item.id}`}
+                      id={`price-${item.id}`}
                       type="number"
                       min="0"
                       step="0.01"
@@ -593,13 +680,12 @@ export default function NewPurchasePage() {
                     />
                   </div>
 
-                  {/* Discount */}
                   <div>
-                    <label htmlFor={`discount-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
+                    <label htmlFor={`disc-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
                       Discount (₹)
                     </label>
                     <Input
-                      id={`discount-${item.id}`}
+                      id={`disc-${item.id}`}
                       type="number"
                       min="0"
                       step="0.01"
@@ -615,18 +701,17 @@ export default function NewPurchasePage() {
                     />
                   </div>
 
-                  {/* Tax Rate */}
                   <div>
-                    <label htmlFor={`tax-rate-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
-                      GST Tax Rate
+                    <label htmlFor={`tax-${item.id}`} className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wider mb-1">
+                      GST Rate
                     </label>
                     <select
-                      id={`tax-rate-${item.id}`}
+                      id={`tax-${item.id}`}
                       value={item.taxRate}
                       onChange={(e) =>
                         handleItemChange(item.id, "taxRate", parseFloat(e.target.value) || 0)
                       }
-                      aria-label="GST Tax Rate"
+                      aria-label="GST Rate"
                       className="w-full h-9 px-2 rounded-lg border border-slate-200 bg-white text-xs sm:text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A]"
                     >
                       <option value="0">0% (Nil)</option>
@@ -635,6 +720,90 @@ export default function NewPurchasePage() {
                       <option value="18">18% GST</option>
                       <option value="28">28% GST</option>
                     </select>
+                  </div>
+                </div>
+
+                {/* Multi-Batch Details Subsection */}
+                <div className="p-3 bg-white rounded-lg border border-slate-200/80 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-slate-700 flex items-center gap-1.5">
+                      <Box className="w-3.5 h-3.5 text-emerald-700" />
+                      Batch Tracking ({item.batches.length} {item.batches.length === 1 ? "Batch" : "Batches"})
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleAddBatch(item.id)}
+                      className="text-[11px] font-semibold text-[#176B3A] hover:underline"
+                    >
+                      + Split / Add Batch
+                    </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    {item.batches.map((batch, bIdx) => (
+                      <div key={bIdx} className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center text-xs">
+                        <div>
+                          <Input
+                            placeholder="Batch # (e.g. B-101)"
+                            value={batch.batchNumber}
+                            onChange={(e) =>
+                              handleBatchChange(item.id, bIdx, "batchNumber", e.target.value)
+                            }
+                            className="h-8 text-xs font-mono uppercase bg-slate-50"
+                          />
+                        </div>
+                        <div>
+                          <Input
+                            type="date"
+                            title="Manufacturing Date"
+                            value={batch.manufacturingDate || ""}
+                            onChange={(e) =>
+                              handleBatchChange(item.id, bIdx, "manufacturingDate", e.target.value)
+                            }
+                            className="h-8 text-xs bg-slate-50"
+                          />
+                        </div>
+                        <div>
+                          <Input
+                            type="date"
+                            title="Expiry Date"
+                            value={batch.expiryDate || ""}
+                            onChange={(e) =>
+                              handleBatchChange(item.id, bIdx, "expiryDate", e.target.value)
+                            }
+                            className="h-8 text-xs bg-slate-50"
+                          />
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Input
+                            type="number"
+                            min="0.01"
+                            step="any"
+                            placeholder="Qty"
+                            value={batch.quantity}
+                            onChange={(e) =>
+                              handleBatchChange(
+                                item.id,
+                                bIdx,
+                                "quantity",
+                                parseFloat(e.target.value) || 0
+                              )
+                            }
+                            className="h-8 text-xs bg-slate-50 w-24"
+                          />
+                          {item.batches.length > 1 && (
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveBatch(item.id, bIdx)}
+                              className="text-slate-400 hover:text-rose-600 p-1"
+                              title="Remove Batch"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
 
@@ -661,23 +830,49 @@ export default function NewPurchasePage() {
         </CardContent>
       </Card>
 
-      {/* Section 3: Notes & Financial Grand Totals */}
+      {/* Section 3: Payment & Grand Totals */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Notes */}
-        <Card className="lg:col-span-2 border border-slate-200/80 shadow-sm p-4 sm:p-5">
-          <CardHeader className="p-0 pb-3">
-            <CardTitle className="text-sm font-semibold text-slate-800">
-              Internal Remarks & Procurement Notes
+        {/* Payment & Remarks */}
+        <Card className="lg:col-span-2 border border-slate-200/80 shadow-sm p-4 sm:p-5 space-y-4">
+          <CardHeader className="p-0 pb-3 border-b border-slate-100 flex-row items-center justify-between">
+            <CardTitle className="text-sm font-semibold text-slate-800 flex items-center gap-2">
+              <CreditCard className="w-4 h-4 text-[#176B3A]" />
+              Upfront Supplier Payment & Terms
             </CardTitle>
           </CardHeader>
-          <CardContent className="p-0">
-            <textarea
-              rows={4}
-              placeholder="Add optional notes, transport details, vehicle number, or payment terms..."
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              className="w-full p-3 rounded-lg border border-slate-200 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A] resize-none"
-            />
+          <CardContent className="p-0 space-y-4">
+            <div>
+              <label htmlFor="amount-paid-input" className="block text-xs font-semibold text-slate-700 mb-1">
+                Upfront Amount Paid (₹) — Optional
+              </label>
+              <Input
+                id="amount-paid-input"
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="0.00"
+                value={amountPaid}
+                onChange={(e) => setAmountPaid(parseFloat(e.target.value) || 0)}
+                className="bg-white text-sm max-w-sm"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                Enter any advance or on-the-spot payment made via UPI, cash, or bank transfer for this invoice.
+              </p>
+            </div>
+
+            <div>
+              <label htmlFor="notes-input" className="block text-xs font-semibold text-slate-700 mb-1">
+                Internal Remarks & Lorry / Transport Details
+              </label>
+              <textarea
+                id="notes-input"
+                rows={3}
+                placeholder="Vehicle number, transport LR number, delivery notes..."
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                className="w-full p-2.5 rounded-lg border border-slate-200 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#176B3A] resize-none"
+              />
+            </div>
           </CardContent>
         </Card>
 
@@ -713,10 +908,24 @@ export default function NewPurchasePage() {
               </span>
             </div>
 
-            <div className="pt-3 border-t border-slate-200 flex items-center justify-between">
+            <div className="pt-2 border-t border-slate-200 flex items-center justify-between">
               <span className="text-sm font-bold text-slate-900">Grand Total:</span>
               <span className="text-lg font-bold text-[#176B3A]">
                 ₹{totals.grandTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between text-emerald-700">
+              <span>Amount Paid:</span>
+              <span className="font-semibold">
+                ₹{(amountPaid || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+
+            <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-amber-700 font-bold">
+              <span>Net Outstanding:</span>
+              <span className="text-base">
+                ₹{outstanding.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
               </span>
             </div>
 
@@ -726,19 +935,19 @@ export default function NewPurchasePage() {
                 variant="primary"
                 className="w-full"
                 loading={submitting}
-                onClick={() => handleSubmit("PENDING_RECEIPT")}
+                onClick={() => handleSubmit(true)}
                 leftIcon={<CheckCircle2 className="w-4 h-4" />}
               >
-                Confirm Purchase Order
+                Confirm & Inward Stock Now
               </Button>
               <Button
                 variant="outline"
                 className="w-full"
                 disabled={submitting}
-                onClick={() => handleSubmit("DRAFT")}
-                leftIcon={<Save className="w-4 h-4" />}
+                onClick={() => handleSubmit(false)}
+                leftIcon={<Clock className="w-4 h-4" />}
               >
-                Save as Draft
+                Save (Pending Goods)
               </Button>
             </div>
           </CardContent>

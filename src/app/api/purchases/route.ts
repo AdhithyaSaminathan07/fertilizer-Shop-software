@@ -18,6 +18,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(request.url);
   const search = searchParams.get("search") || undefined;
   const status = (searchParams.get("status") as PurchaseStatus) || undefined;
+  const paymentStatus = (searchParams.get("paymentStatus") as any) || undefined;
   const supplierId = searchParams.get("supplierId") || undefined;
   const startDate = searchParams.get("startDate") || undefined;
   const endDate = searchParams.get("endDate") || undefined;
@@ -30,6 +31,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     const result = await listPurchases({
       search,
       status,
+      paymentStatus,
       supplierId,
       startDate,
       endDate,
@@ -85,3 +87,4 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 }
+

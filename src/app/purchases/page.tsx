@@ -17,6 +17,9 @@ import {
   Building2,
   ChevronRight,
   TrendingUp,
+  CreditCard,
+  DollarSign,
+  Package,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,15 +34,16 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import type { IPurchase, PurchaseStatus } from "@/types/purchase";
+import type { IPurchase, PurchaseStatus, PurchasePaymentStatus } from "@/types/purchase";
 import type { ISupplier } from "@/types/supplier";
 
-export default function PurchasesPage() {
+export default function PurchaseRegisterPage() {
   const [purchases, setPurchases] = useState<IPurchase[]>([]);
   const [suppliers, setSuppliers] = useState<ISupplier[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<PurchaseStatus | "ALL">("ALL");
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState<PurchasePaymentStatus | "ALL">("ALL");
   const [supplierFilter, setSupplierFilter] = useState<string>("ALL");
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -52,6 +56,8 @@ export default function PurchasesPage() {
   const [stats, setStats] = useState({
     totalCount: 0,
     totalGrossAmount: 0,
+    totalPaidAmount: 0,
+    totalOutstandingAmount: 0,
     pendingReceiptCount: 0,
     partiallyReceivedCount: 0,
     receivedCount: 0,
@@ -77,7 +83,7 @@ export default function PurchasesPage() {
     loadSuppliers();
   }, []);
 
-  // Fetch purchase orders
+  // Fetch purchase bills
   useEffect(() => {
     let ignore = false;
     async function fetchPurchases() {
@@ -86,6 +92,7 @@ export default function PurchasesPage() {
         const params = new URLSearchParams();
         if (search.trim()) params.set("search", search.trim());
         if (statusFilter !== "ALL") params.set("status", statusFilter);
+        if (paymentStatusFilter !== "ALL") params.set("paymentStatus", paymentStatusFilter);
         if (supplierFilter !== "ALL") params.set("supplierId", supplierFilter);
         params.set("page", page.toString());
         params.set("limit", "15");
@@ -113,22 +120,35 @@ export default function PurchasesPage() {
     return () => {
       ignore = true;
     };
-  }, [search, statusFilter, supplierFilter, page, refreshKey]);
+  }, [search, statusFilter, paymentStatusFilter, supplierFilter, page, refreshKey]);
 
-  function getStatusBadge(status: PurchaseStatus) {
+  function getReceiptStatusBadge(status: PurchaseStatus) {
     switch (status) {
       case "DRAFT":
         return <Badge variant="neutral" dot>Draft</Badge>;
       case "PENDING_RECEIPT":
-        return <Badge variant="warning" dot>Pending Receipt</Badge>;
+        return <Badge variant="warning" dot>Pending Goods</Badge>;
       case "PARTIALLY_RECEIVED":
         return <Badge variant="info" dot>Partially Received</Badge>;
       case "RECEIVED":
-        return <Badge variant="success" dot>Received</Badge>;
+        return <Badge variant="success" dot>Received in Stock</Badge>;
       case "CANCELLED":
         return <Badge variant="danger" dot>Cancelled</Badge>;
       default:
         return <Badge variant="neutral">{status}</Badge>;
+    }
+  }
+
+  function getPaymentStatusBadge(status: PurchasePaymentStatus) {
+    switch (status) {
+      case "PAID":
+        return <Badge variant="success" size="sm">PAID</Badge>;
+      case "PARTIALLY_PAID":
+        return <Badge variant="warning" size="sm">PARTIAL</Badge>;
+      case "UNPAID":
+        return <Badge variant="danger" size="sm">UNPAID</Badge>;
+      default:
+        return <Badge variant="neutral" size="sm">{status}</Badge>;
     }
   }
 
@@ -139,12 +159,12 @@ export default function PurchasesPage() {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
-              Purchase Orders
+              Purchase Register
             </h1>
             <Badge variant="agri" size="sm">Phase 5B</Badge>
           </div>
           <p className="text-sm text-slate-500 mt-1">
-            Manage purchase orders, supplier invoices, line-level taxes & discount calculations.
+            Supplier inward invoices, batch inventory tracking, and payment balances.
           </p>
         </div>
 
@@ -164,7 +184,7 @@ export default function PurchasesPage() {
               size="sm"
               leftIcon={<Plus className="w-4 h-4" />}
             >
-              New Purchase Order
+              New Purchase Entry
             </Button>
           </Link>
         </div>
@@ -172,7 +192,7 @@ export default function PurchasesPage() {
 
       {/* KPI Summary Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 sm:gap-4">
-        {/* Total Orders */}
+        {/* Total Inward Bills */}
         <Card className="p-3 sm:p-4 bg-white border border-slate-200/80 shadow-sm">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-emerald-50 text-[#176B3A] flex items-center justify-center shrink-0">
@@ -180,7 +200,7 @@ export default function PurchasesPage() {
             </div>
             <div className="min-w-0">
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">
-                Total Orders
+                Total Invoices
               </p>
               <p className="text-lg sm:text-xl font-bold text-slate-900 truncate">
                 {stats.totalCount}
@@ -189,52 +209,52 @@ export default function PurchasesPage() {
           </div>
         </Card>
 
-        {/* Pending Receipt */}
-        <Card className="p-3 sm:p-4 bg-white border border-slate-200/80 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
-              <Clock className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">
-                Pending Goods
-              </p>
-              <p className="text-lg sm:text-xl font-bold text-amber-600 truncate">
-                {stats.pendingReceiptCount + stats.partiallyReceivedCount}
-              </p>
-            </div>
-          </div>
-        </Card>
-
-        {/* Completed / Received */}
+        {/* Total Invoiced Value */}
         <Card className="p-3 sm:p-4 bg-white border border-slate-200/80 shadow-sm">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-sky-50 text-sky-600 flex items-center justify-center shrink-0">
-              <CheckCircle2 className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">
-                Received
-              </p>
-              <p className="text-lg sm:text-xl font-bold text-slate-900 truncate">
-                {stats.receivedCount}
-              </p>
-            </div>
-          </div>
-        </Card>
-
-        {/* Total Order Value */}
-        <Card className="p-3 sm:p-4 bg-white border border-slate-200/80 shadow-sm">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-lg bg-[#EAF5EE] text-[#176B3A] flex items-center justify-center shrink-0">
               <TrendingUp className="w-5 h-5" />
             </div>
             <div className="min-w-0">
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">
-                Total Value
+                Invoiced Value
               </p>
-              <p className="text-lg sm:text-xl font-bold text-[#176B3A] truncate">
-                ₹{stats.totalGrossAmount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              <p className="text-lg sm:text-xl font-bold text-slate-900 truncate">
+                ₹{stats.totalGrossAmount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </p>
+            </div>
+          </div>
+        </Card>
+
+        {/* Total Paid */}
+        <Card className="p-3 sm:p-4 bg-white border border-slate-200/80 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
+              <CreditCard className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">
+                Paid to Suppliers
+              </p>
+              <p className="text-lg sm:text-xl font-bold text-emerald-700 truncate">
+                ₹{stats.totalPaidAmount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </p>
+            </div>
+          </div>
+        </Card>
+
+        {/* Net Outstanding Balance */}
+        <Card className="p-3 sm:p-4 bg-white border border-slate-200/80 shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center shrink-0">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-wider">
+                Outstanding Balance
+              </p>
+              <p className="text-lg sm:text-xl font-bold text-amber-700 truncate">
+                ₹{stats.totalOutstandingAmount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
               </p>
             </div>
           </div>
@@ -249,7 +269,7 @@ export default function PurchasesPage() {
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <Input
               type="text"
-              placeholder="Search by PO#, Supplier invoice#, or Supplier name..."
+              placeholder="Search by Bill #, Supplier Invoice #, or Supplier Name..."
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
@@ -280,47 +300,71 @@ export default function PurchasesPage() {
           </div>
         </div>
 
-        {/* Status Filter Pills */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pt-3 mt-3 border-t border-slate-100 text-xs scrollbar-none">
-          <span className="text-slate-400 font-medium mr-1 text-[11px] uppercase tracking-wider">Status:</span>
-          {(["ALL", "DRAFT", "PENDING_RECEIPT", "PARTIALLY_RECEIVED", "RECEIVED", "CANCELLED"] as const).map((st) => (
-            <button
-              key={st}
-              onClick={() => {
-                setStatusFilter(st);
-                setPage(1);
-              }}
-              className={`px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
-                statusFilter === st
-                  ? "bg-[#176B3A] text-white"
-                  : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-              }`}
-            >
-              {st === "ALL" ? "All Orders" : st.replace("_", " ")}
-            </button>
-          ))}
+        {/* Filter Pills */}
+        <div className="pt-3 mt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          {/* Receipt Status Filter */}
+          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
+            <span className="text-slate-400 font-medium mr-1 text-[11px] uppercase tracking-wider">Receipt:</span>
+            {(["ALL", "PENDING_RECEIPT", "PARTIALLY_RECEIVED", "RECEIVED", "DRAFT", "CANCELLED"] as const).map((st) => (
+              <button
+                key={st}
+                onClick={() => {
+                  setStatusFilter(st);
+                  setPage(1);
+                }}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
+                  statusFilter === st
+                    ? "bg-[#176B3A] text-white"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                {st === "ALL" ? "All Receipts" : st.replace("_", " ")}
+              </button>
+            ))}
+          </div>
+
+          {/* Payment Status Filter */}
+          <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none">
+            <span className="text-slate-400 font-medium mr-1 text-[11px] uppercase tracking-wider">Payment:</span>
+            {(["ALL", "UNPAID", "PARTIALLY_PAID", "PAID"] as const).map((pst) => (
+              <button
+                key={pst}
+                onClick={() => {
+                  setPaymentStatusFilter(pst);
+                  setPage(1);
+                }}
+                className={`px-2.5 py-1 rounded-full text-xs font-medium whitespace-nowrap transition-colors ${
+                  paymentStatusFilter === pst
+                    ? "bg-slate-900 text-white"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                {pst === "ALL" ? "All Payments" : pst.replace("_", " ")}
+              </button>
+            ))}
+          </div>
         </div>
       </Card>
 
-      {/* Purchase Orders Content */}
+      {/* Purchase Register Content */}
       {loading ? (
         <Card className="p-12 text-center text-slate-400">
           <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-[#176B3A]" />
-          <p className="text-sm">Loading purchase orders...</p>
+          <p className="text-sm">Loading purchase entries...</p>
         </Card>
       ) : purchases.length === 0 ? (
         <EmptyState
           icon={<ClipboardList className="h-6 w-6" />}
-          title="No purchase orders found"
+          title="No purchase invoices found"
           description={
-            search || statusFilter !== "ALL" || supplierFilter !== "ALL"
-              ? "No purchases match your selected filters. Try clearing filters or searching for another term."
-              : "Create your first purchase order to track incoming inventory, supplier invoices, and tax calculations."
+            search || statusFilter !== "ALL" || supplierFilter !== "ALL" || paymentStatusFilter !== "ALL"
+              ? "No purchases match your selected filters. Try clearing filters or searching for another invoice."
+              : "Record your first inward purchase bill to update stock, batch inventories, and vendor accounts."
           }
           action={
             <Link href="/purchases/new">
               <Button variant="primary" leftIcon={<Plus className="w-4 h-4" />}>
-                Create Purchase Order
+                Record Purchase Bill
               </Button>
             </Link>
           }
@@ -333,19 +377,19 @@ export default function PurchasesPage() {
               <Table>
                 <TableHeader>
                   <TableRow className="bg-slate-50/80">
-                    <TableHead className="font-semibold text-slate-700">Order #</TableHead>
+                    <TableHead className="font-semibold text-slate-700">Bill # / Date</TableHead>
                     <TableHead className="font-semibold text-slate-700">Supplier</TableHead>
-                    <TableHead className="font-semibold text-slate-700">Supplier Invoice</TableHead>
-                    <TableHead className="font-semibold text-slate-700">Items / Qty</TableHead>
-                    <TableHead className="font-semibold text-slate-700">Status</TableHead>
-                    <TableHead className="font-semibold text-slate-700 text-right">Grand Total</TableHead>
-                    <TableHead className="font-semibold text-slate-700 text-right">Actions</TableHead>
+                    <TableHead className="font-semibold text-slate-700">Invoice # / Date</TableHead>
+                    <TableHead className="font-semibold text-slate-700">Receipt Status</TableHead>
+                    <TableHead className="font-semibold text-slate-700">Payment Status</TableHead>
+                    <TableHead className="font-semibold text-slate-700 text-right">Invoice Total</TableHead>
+                    <TableHead className="font-semibold text-slate-700 text-right">Outstanding</TableHead>
+                    <TableHead className="font-semibold text-slate-700 text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {purchases.map((po) => {
                     const poId = po.id || po._id;
-                    const totalQty = po.items.reduce((sum, item) => sum + item.orderedQty, 0);
                     return (
                       <TableRow key={poId} className="hover:bg-slate-50/60 transition-colors">
                         <TableCell className="font-medium">
@@ -376,7 +420,7 @@ export default function PurchasesPage() {
                         </TableCell>
 
                         <TableCell>
-                          <div className="font-mono text-xs text-slate-800">
+                          <div className="font-mono text-xs text-slate-800 font-semibold">
                             {po.supplierInvoiceNumber}
                           </div>
                           <div className="text-xs text-slate-400">
@@ -388,16 +432,9 @@ export default function PurchasesPage() {
                           </div>
                         </TableCell>
 
-                        <TableCell>
-                          <span className="text-xs text-slate-700 font-medium">
-                            {po.items.length} {po.items.length === 1 ? "item" : "items"}
-                          </span>
-                          <span className="text-xs text-slate-400 block">
-                            ({totalQty} units total)
-                          </span>
-                        </TableCell>
+                        <TableCell>{getReceiptStatusBadge(po.status)}</TableCell>
 
-                        <TableCell>{getStatusBadge(po.status)}</TableCell>
+                        <TableCell>{getPaymentStatusBadge(po.paymentStatus)}</TableCell>
 
                         <TableCell className="text-right font-semibold text-slate-900">
                           ₹{po.grandTotal.toLocaleString("en-IN", {
@@ -406,10 +443,17 @@ export default function PurchasesPage() {
                           })}
                         </TableCell>
 
+                        <TableCell className="text-right font-bold text-amber-700">
+                          ₹{(po.outstandingAmount || 0).toLocaleString("en-IN", {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </TableCell>
+
                         <TableCell className="text-right">
                           <Link href={`/purchases/${poId}`}>
                             <Button variant="outline" size="sm">
-                              View Details
+                              View Bill
                             </Button>
                           </Link>
                         </TableCell>
@@ -425,7 +469,6 @@ export default function PurchasesPage() {
           <div className="md:hidden space-y-3">
             {purchases.map((po) => {
               const poId = po.id || po._id;
-              const totalQty = po.items.reduce((sum, item) => sum + item.orderedQty, 0);
               return (
                 <Link key={poId} href={`/purchases/${poId}`} className="block">
                   <Card className="p-4 border border-slate-200/80 shadow-sm active:bg-slate-50 transition-colors">
@@ -438,22 +481,21 @@ export default function PurchasesPage() {
                           {po.supplierSnapshot?.name || "Unknown Supplier"}
                         </h2>
                       </div>
-                      <div>{getStatusBadge(po.status)}</div>
+                      <div className="flex flex-col items-end gap-1">
+                        {getReceiptStatusBadge(po.status)}
+                        {getPaymentStatusBadge(po.paymentStatus)}
+                      </div>
                     </div>
 
                     <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
                       <div>
                         <span className="text-slate-400">Inv: </span>
                         <span className="font-mono font-medium text-slate-700">{po.supplierInvoiceNumber}</span>
-                        <span className="text-slate-300 mx-1.5">•</span>
-                        <span>{po.items.length} items</span>
                       </div>
                       <div className="text-right">
-                        <span className="text-sm font-bold text-slate-900">
-                          ₹{po.grandTotal.toLocaleString("en-IN", {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })}
+                        <span className="text-xs text-slate-400 block">Total: ₹{po.grandTotal.toFixed(2)}</span>
+                        <span className="text-sm font-bold text-amber-700">
+                          Due: ₹{(po.outstandingAmount || 0).toFixed(2)}
                         </span>
                       </div>
                     </div>
@@ -467,7 +509,7 @@ export default function PurchasesPage() {
           {totalPages > 1 && (
             <div className="flex items-center justify-between pt-2">
               <p className="text-xs text-slate-500">
-                Showing {purchases.length} of {totalCount} orders (Page {page} of {totalPages})
+                Showing {purchases.length} of {totalCount} bills (Page {page} of {totalPages})
               </p>
               <div className="flex items-center gap-2">
                 <Button

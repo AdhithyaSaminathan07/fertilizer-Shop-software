@@ -20,6 +20,11 @@ import {
   Package,
   Layers,
   Info,
+  CreditCard,
+  Truck,
+  Box,
+  Plus,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -34,7 +39,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import type { IPurchase, PurchaseStatus } from "@/types/purchase";
+import type { IPurchase, PurchaseStatus, PurchasePaymentStatus } from "@/types/purchase";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -53,6 +58,29 @@ export default function PurchaseDetailPage({ params }: PageProps) {
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Inward Dialog state
+  const [isInwardOpen, setIsInwardOpen] = useState(false);
+  const [inwardNotes, setInwardNotes] = useState("");
+  const [inwardItems, setInwardItems] = useState<
+    {
+      productId: string;
+      productName: string;
+      primaryUnit: string;
+      orderedQty: number;
+      alreadyReceivedQty: number;
+      remainingQty: number;
+      receivedQty: number;
+      batches: {
+        batchNumber: string;
+        manufacturingDate?: string;
+        expiryDate?: string;
+        quantity: number;
+      }[];
+    }[]
+  >([]);
+  const [inwarding, setInwarding] = useState(false);
+  const [inwardError, setInwardError] = useState("");
+
   // Cancellation dialog state
   const [isCancelOpen, setIsCancelOpen] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
@@ -62,23 +90,9 @@ export default function PurchaseDetailPage({ params }: PageProps) {
   // Amend dialog state
   const [isAmendOpen, setIsAmendOpen] = useState(false);
   const [amendReason, setAmendReason] = useState("");
-  const [amendItems, setAmendItems] = useState<
-    {
-      productId: string;
-      productName: string;
-      primaryUnit: string;
-      orderedQty: number;
-      receivedQty: number;
-      unitPurchasePrice: number;
-      discountAmount: number;
-      taxRate: number;
-    }[]
-  >([]);
+  const [amendItems, setAmendItems] = useState<any[]>([]);
   const [amending, setAmending] = useState(false);
   const [amendError, setAmendError] = useState("");
-
-  // Status transition loading
-  const [updatingStatus, setUpdatingStatus] = useState(false);
 
   // Fetch purchase details
   useEffect(() => {
@@ -87,7 +101,7 @@ export default function PurchaseDetailPage({ params }: PageProps) {
       setLoading(true);
       try {
         const res = await fetch(`/api/purchases/${id}`);
-        if (!res.ok) throw new Error("Failed to load purchase order");
+        if (!res.ok) throw new Error("Failed to load purchase bill");
         const json = await res.json();
         if (!ignore && json.success && json.data?.purchase) {
           setPurchase(json.data.purchase);
@@ -106,16 +120,16 @@ export default function PurchaseDetailPage({ params }: PageProps) {
     };
   }, [id, refreshKey]);
 
-  function getStatusBadge(status: PurchaseStatus) {
+  function getReceiptStatusBadge(status: PurchaseStatus) {
     switch (status) {
       case "DRAFT":
         return <Badge variant="neutral" dot>Draft</Badge>;
       case "PENDING_RECEIPT":
-        return <Badge variant="warning" dot>Pending Receipt</Badge>;
+        return <Badge variant="warning" dot>Pending Goods</Badge>;
       case "PARTIALLY_RECEIVED":
         return <Badge variant="info" dot>Partially Received</Badge>;
       case "RECEIVED":
-        return <Badge variant="success" dot>Received</Badge>;
+        return <Badge variant="success" dot>Fully Received</Badge>;
       case "CANCELLED":
         return <Badge variant="danger" dot>Cancelled</Badge>;
       default:
@@ -123,34 +137,136 @@ export default function PurchaseDetailPage({ params }: PageProps) {
     }
   }
 
-  // Handle Confirm Order (DRAFT -> PENDING_RECEIPT)
-  async function handleConfirmOrder() {
+  function getPaymentStatusBadge(status: PurchasePaymentStatus) {
+    switch (status) {
+      case "PAID":
+        return <Badge variant="success" size="sm">PAID</Badge>;
+      case "PARTIALLY_PAID":
+        return <Badge variant="warning" size="sm">PARTIAL</Badge>;
+      case "UNPAID":
+        return <Badge variant="danger" size="sm">UNPAID</Badge>;
+      default:
+        return <Badge variant="neutral" size="sm">{status}</Badge>;
+    }
+  }
+
+  // Open Inward Modal
+  function openInwardModal() {
     if (!purchase) return;
-    const purchaseId = purchase.id || purchase._id;
-    setUpdatingStatus(true);
+    setInwardError("");
+    setInwardNotes("");
+
+    const initial = purchase.items.map((it) => {
+      const remaining = Math.max(0, round2(it.orderedQty - (it.receivedQty || 0)));
+      return {
+        productId: it.productId,
+        productName: it.productSnapshot?.name || "Product",
+        primaryUnit: it.unit,
+        orderedQty: it.orderedQty,
+        alreadyReceivedQty: it.receivedQty || 0,
+        remainingQty: remaining,
+        receivedQty: remaining, // default to receiving the rest
+        batches: [
+          {
+            batchNumber: `BAT-${purchase.purchaseNumber.replace(/[^0-9]/g, "")}-${String(it.productId).slice(-3)}`,
+            quantity: remaining,
+          },
+        ],
+      };
+    });
+
+    setInwardItems(initial);
+    setIsInwardOpen(true);
+  }
+
+  // Handle Inward Submission
+  async function handleConfirmInward() {
+    if (!purchase) return;
+    setInwardError("");
+
+    const activeInwardItems = inwardItems.filter((it) => it.receivedQty > 0);
+    if (activeInwardItems.length === 0) {
+      setInwardError("Please specify a received quantity greater than 0 for at least one item.");
+      return;
+    }
+
+    // Validate batch sums
+    for (const it of activeInwardItems) {
+      if (it.receivedQty > it.remainingQty) {
+        setInwardError(
+          `Received quantity (${it.receivedQty}) cannot exceed remaining ordered quantity (${it.remainingQty}) for '${it.productName}'.`
+        );
+        return;
+      }
+
+      let bSum = 0;
+      for (const b of it.batches) {
+        if (!b.batchNumber.trim()) {
+          setInwardError(`Batch number is required for all inward batches of '${it.productName}'.`);
+          return;
+        }
+        if (b.quantity <= 0) {
+          setInwardError(`Batch quantity must be greater than 0 for batch '${b.batchNumber}'.`);
+          return;
+        }
+        if (b.manufacturingDate && b.expiryDate) {
+          if (new Date(b.manufacturingDate) > new Date(b.expiryDate)) {
+            setInwardError(`Expiry date must be after manufacturing date for batch '${b.batchNumber}'.`);
+            return;
+          }
+        }
+        bSum += b.quantity;
+      }
+
+      if (round2(bSum) !== round2(it.receivedQty)) {
+        setInwardError(
+          `Sum of batch quantities (${bSum}) must equal received quantity (${it.receivedQty}) for '${it.productName}'.`
+        );
+        return;
+      }
+    }
+
+    setInwarding(true);
     try {
-      const res = await fetch(`/api/purchases/${purchaseId}`, {
-        method: "PATCH",
+      const payload = {
+        notes: inwardNotes.trim() || undefined,
+        items: activeInwardItems.map((it) => ({
+          productId: it.productId,
+          receivedQty: Number(it.receivedQty),
+          batches: it.batches.map((b) => ({
+            batchNumber: b.batchNumber.trim().toUpperCase(),
+            manufacturingDate: b.manufacturingDate ? new Date(b.manufacturingDate).toISOString() : undefined,
+            expiryDate: b.expiryDate ? new Date(b.expiryDate).toISOString() : undefined,
+            quantity: Number(b.quantity),
+          })),
+        })),
+      };
+
+      const res = await fetch(`/api/purchases/${purchase.id || purchase._id}/inward`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status: "PENDING_RECEIPT" }),
+        body: JSON.stringify(payload),
       });
+
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || "Failed to confirm order");
+      if (!res.ok) throw new Error(data.error?.message || "Failed to confirm stock inward");
+
+      setIsInwardOpen(false);
       setRefreshKey((k) => k + 1);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Error confirming purchase order");
+      setInwardError(err instanceof Error ? err.message : "Failed to confirm stock inward");
     } finally {
-      setUpdatingStatus(false);
+      setInwarding(false);
     }
   }
 
   // Handle Cancellation
   async function handleConfirmCancel() {
     if (!purchase) return;
-    const purchaseId = purchase.id || purchase._id;
     setCancelError("");
     setCancelling(true);
     try {
+      const purchaseId = purchase.id || purchase._id;
       const res = await fetch(`/api/purchases/${purchaseId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -160,89 +276,13 @@ export default function PurchaseDetailPage({ params }: PageProps) {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || "Failed to cancel purchase");
+      if (!res.ok) throw new Error(data.error?.message || "Failed to cancel purchase bill");
       setIsCancelOpen(false);
       setRefreshKey((k) => k + 1);
     } catch (err) {
-      setCancelError(err instanceof Error ? err.message : "Failed to cancel purchase order");
+      setCancelError(err instanceof Error ? err.message : "Failed to cancel purchase bill");
     } finally {
       setCancelling(false);
-    }
-  }
-
-  // Initialize Amend Modal
-  function openAmendModal() {
-    if (!purchase) return;
-    setAmendReason("");
-    setAmendError("");
-    setAmendItems(
-      purchase.items.map((it) => ({
-        productId: it.productId,
-        productName: it.productSnapshot?.name || "Product",
-        primaryUnit: it.unit,
-        orderedQty: it.orderedQty,
-        receivedQty: it.receivedQty || 0,
-        unitPurchasePrice: it.unitPurchasePrice,
-        discountAmount: it.discountAmount || 0,
-        taxRate: it.taxRate || 0,
-      }))
-    );
-    setIsAmendOpen(true);
-  }
-
-  // Handle Amend Submission
-  async function handleConfirmAmend() {
-    if (!purchase) return;
-    setAmendError("");
-
-    if (!amendReason.trim() || amendReason.trim().length < 5) {
-      setAmendError("Amendment reason must be at least 5 characters.");
-      return;
-    }
-
-    // Verify quantity floor rule
-    for (const it of amendItems) {
-      if (it.orderedQty < it.receivedQty) {
-        setAmendError(
-          `Cannot reduce quantity of '${it.productName}' below received quantity (${it.receivedQty} ${it.primaryUnit}).`
-        );
-        return;
-      }
-      if (it.orderedQty <= 0) {
-        setAmendError(`Ordered quantity for '${it.productName}' must be greater than zero.`);
-        return;
-      }
-    }
-
-    setAmending(true);
-    try {
-      const payload = {
-        reason: amendReason.trim(),
-        items: amendItems.map((it) => ({
-          productId: it.productId,
-          orderedQty: Number(it.orderedQty),
-          unitPurchasePrice: Number(it.unitPurchasePrice),
-          discountAmount: Number(it.discountAmount || 0),
-          taxRate: Number(it.taxRate || 0),
-        })),
-      };
-
-      const purchaseId = purchase.id || purchase._id;
-      const res = await fetch(`/api/purchases/${purchaseId}/amend`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error?.message || "Failed to amend purchase order");
-
-      setIsAmendOpen(false);
-      setRefreshKey((k) => k + 1);
-    } catch (err) {
-      setAmendError(err instanceof Error ? err.message : "Failed to amend purchase order");
-    } finally {
-      setAmending(false);
     }
   }
 
@@ -250,7 +290,7 @@ export default function PurchaseDetailPage({ params }: PageProps) {
     return (
       <Card className="p-16 text-center text-slate-400 max-w-5xl mx-auto">
         <Clock className="w-8 h-8 animate-spin mx-auto mb-2 text-[#176B3A]" />
-        <p className="text-sm font-medium">Loading purchase order details...</p>
+        <p className="text-sm font-medium">Loading purchase bill details...</p>
       </Card>
     );
   }
@@ -260,24 +300,24 @@ export default function PurchaseDetailPage({ params }: PageProps) {
       <div className="max-w-4xl mx-auto space-y-4">
         <Link href="/purchases">
           <Button variant="outline" size="sm" leftIcon={<ArrowLeft className="w-4 h-4" />}>
-            Back to Orders
+            Back to Register
           </Button>
         </Link>
         <div className="p-6 bg-rose-50 border border-rose-200 rounded-lg text-rose-800">
-          <p className="font-semibold">Unable to load purchase order</p>
-          <p className="text-sm mt-1">{error || "Purchase order not found."}</p>
+          <p className="font-semibold">Unable to load purchase bill</p>
+          <p className="text-sm mt-1">{error || "Purchase bill not found."}</p>
         </div>
       </div>
     );
   }
 
+  const canInward =
+    purchase.status === "PENDING_RECEIPT" || purchase.status === "PARTIALLY_RECEIVED";
+
   const canCancel =
     purchase.status !== "CANCELLED" &&
     purchase.status !== "RECEIVED" &&
-    purchase.receivedQty === 0;
-
-  const canAmend =
-    purchase.status === "PENDING_RECEIPT" || purchase.status === "PARTIALLY_RECEIVED";
+    (purchase.receivedQty || 0) === 0;
 
   return (
     <div className="space-y-6 pb-16 max-w-6xl mx-auto">
@@ -286,7 +326,7 @@ export default function PurchaseDetailPage({ params }: PageProps) {
         <div className="flex items-center gap-3">
           <Link href="/purchases">
             <Button variant="outline" size="sm" leftIcon={<ArrowLeft className="w-4 h-4" />}>
-              Back
+              Back to Register
             </Button>
           </Link>
           <div>
@@ -294,16 +334,15 @@ export default function PurchaseDetailPage({ params }: PageProps) {
               <h1 className="text-2xl font-bold text-slate-900 tracking-tight">
                 {purchase.purchaseNumber}
               </h1>
-              {getStatusBadge(purchase.status)}
+              {getReceiptStatusBadge(purchase.status)}
+              {getPaymentStatusBadge(purchase.paymentStatus)}
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Created on{" "}
-              {new Date(purchase.createdAt).toLocaleDateString("en-IN", {
+              Recorded on{" "}
+              {new Date(purchase.purchaseDate || purchase.createdAt).toLocaleDateString("en-IN", {
                 day: "numeric",
                 month: "short",
                 year: "numeric",
-                hour: "2-digit",
-                minute: "2-digit",
               })}
             </p>
           </div>
@@ -311,26 +350,14 @@ export default function PurchaseDetailPage({ params }: PageProps) {
 
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
-          {purchase.status === "DRAFT" && (
+          {canInward && (
             <Button
               variant="primary"
               size="sm"
-              loading={updatingStatus}
-              onClick={handleConfirmOrder}
-              leftIcon={<CheckCircle2 className="w-4 h-4" />}
+              onClick={openInwardModal}
+              leftIcon={<Truck className="w-4 h-4" />}
             >
-              Confirm Order
-            </Button>
-          )}
-
-          {canAmend && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={openAmendModal}
-              leftIcon={<Edit3 className="w-4 h-4" />}
-            >
-              Amend Order
+              Receive / Inward Stock
             </Button>
           )}
 
@@ -345,7 +372,7 @@ export default function PurchaseDetailPage({ params }: PageProps) {
               }}
               leftIcon={<Ban className="w-4 h-4" />}
             >
-              Cancel Order
+              Cancel Bill
             </Button>
           )}
         </div>
@@ -353,14 +380,14 @@ export default function PurchaseDetailPage({ params }: PageProps) {
 
       {/* Supplier & Invoice Snapshot */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Supplier Snapshot */}
+        {/* Supplier Details */}
         <Card className="border border-slate-200/80 shadow-sm p-4 sm:p-5">
           <CardHeader className="p-0 pb-3 border-b border-slate-100 flex-row items-center justify-between">
             <CardTitle className="text-sm font-semibold text-slate-900 flex items-center gap-2">
               <Building2 className="w-4 h-4 text-[#176B3A]" />
-              Supplier Information
+              Supplier Details
             </CardTitle>
-            <Badge variant="neutral" size="sm">Snapshot</Badge>
+            <Badge variant="neutral" size="sm">Registered Vendor</Badge>
           </CardHeader>
           <CardContent className="p-0 pt-3 space-y-2 text-xs">
             <div className="flex justify-between">
@@ -385,35 +412,22 @@ export default function PurchaseDetailPage({ params }: PageProps) {
                 {purchase.supplierSnapshot?.gstin || "Unregistered"}
               </span>
             </div>
-            {purchase.supplierSnapshot?.address && (
-              <div className="pt-2 border-t border-slate-100 text-slate-500">
-                <span>Address: </span>
-                {[
-                  purchase.supplierSnapshot.address.street,
-                  purchase.supplierSnapshot.address.city,
-                  purchase.supplierSnapshot.address.state,
-                  purchase.supplierSnapshot.address.pincode,
-                ]
-                  .filter(Boolean)
-                  .join(", ")}
-              </div>
-            )}
           </CardContent>
         </Card>
 
-        {/* Invoice & Order Details */}
+        {/* Invoice Particulars */}
         <Card className="border border-slate-200/80 shadow-sm p-4 sm:p-5">
           <CardHeader className="p-0 pb-3 border-b border-slate-100 flex-row items-center justify-between">
             <CardTitle className="text-sm font-semibold text-slate-900 flex items-center gap-2">
               <FileText className="w-4 h-4 text-[#176B3A]" />
-              Invoice & Order Particulars
+              Supplier Invoice Particulars
             </CardTitle>
-            <Badge variant="neutral" size="sm">Metadata</Badge>
+            <Badge variant="neutral" size="sm">Tax Invoice</Badge>
           </CardHeader>
           <CardContent className="p-0 pt-3 space-y-2 text-xs">
             <div className="flex justify-between">
               <span className="text-slate-500">Supplier Invoice #:</span>
-              <strong className="font-mono text-slate-800 text-sm">
+              <strong className="font-mono text-slate-900 text-sm font-bold">
                 {purchase.supplierInvoiceNumber}
               </strong>
             </div>
@@ -428,7 +442,7 @@ export default function PurchaseDetailPage({ params }: PageProps) {
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-500">Purchase Order Date:</span>
+              <span className="text-slate-500">Purchase Entry Date:</span>
               <span className="text-slate-800 font-medium">
                 {new Date(purchase.purchaseDate || purchase.createdAt).toLocaleDateString("en-IN", {
                   day: "numeric",
@@ -439,7 +453,7 @@ export default function PurchaseDetailPage({ params }: PageProps) {
             </div>
             {purchase.notes && (
               <div className="pt-2 border-t border-slate-100 text-slate-600">
-                <span className="font-medium text-slate-700 block mb-0.5">Notes:</span>
+                <span className="font-medium text-slate-700 block mb-0.5">Remarks / LR #:</span>
                 <p className="bg-slate-50 p-2 rounded text-slate-600 text-xs">{purchase.notes}</p>
               </div>
             )}
@@ -453,10 +467,10 @@ export default function PurchaseDetailPage({ params }: PageProps) {
           <div>
             <CardTitle className="text-base font-semibold text-slate-900 flex items-center gap-2">
               <Package className="w-4 h-4 text-[#176B3A]" />
-              Purchase Line Items
+              Invoiced Products & Received Batches
             </CardTitle>
             <p className="text-xs text-slate-500 mt-0.5">
-              Snapshot of products, ordered quantity, unit prices, and GST.
+              Breakdown of invoiced quantities, received quantities, cost prices, and batch details.
             </p>
           </div>
           <span className="text-xs text-slate-500 font-medium">
@@ -470,13 +484,13 @@ export default function PurchaseDetailPage({ params }: PageProps) {
             <TableHeader>
               <TableRow className="bg-slate-50/80">
                 <TableHead className="w-10">#</TableHead>
-                <TableHead>Product</TableHead>
-                <TableHead className="text-center">Ordered Qty</TableHead>
-                <TableHead className="text-center">Received Qty</TableHead>
+                <TableHead>Product / Brand</TableHead>
+                <TableHead className="text-center">Invoiced Qty</TableHead>
+                <TableHead className="text-center">Stock Inwarded</TableHead>
                 <TableHead className="text-right">Unit Price</TableHead>
-                <TableHead className="text-right">Discount</TableHead>
                 <TableHead className="text-right">Tax (GST)</TableHead>
                 <TableHead className="text-right">Line Total</TableHead>
+                <TableHead className="text-right">Recognized</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -500,19 +514,18 @@ export default function PurchaseDetailPage({ params }: PageProps) {
                   <TableCell className="text-center">
                     <span
                       className={`text-xs font-semibold px-2 py-0.5 rounded-full ${
-                        item.receivedQty > 0
+                        item.receivedQty >= item.orderedQty
                           ? "bg-emerald-50 text-emerald-700"
-                          : "bg-slate-100 text-slate-500"
+                          : item.receivedQty > 0
+                          ? "bg-sky-50 text-sky-700"
+                          : "bg-amber-50 text-amber-700"
                       }`}
                     >
-                      {item.receivedQty || 0} / {item.orderedQty}
+                      {item.receivedQty || 0} / {item.orderedQty} {item.unit}
                     </span>
                   </TableCell>
                   <TableCell className="text-right font-mono text-slate-800">
                     ₹{item.unitPurchasePrice.toFixed(2)}
-                  </TableCell>
-                  <TableCell className="text-right font-mono text-slate-600">
-                    {item.discountAmount > 0 ? `-₹${item.discountAmount.toFixed(2)}` : "—"}
                   </TableCell>
                   <TableCell className="text-right font-mono text-slate-600">
                     <div>₹{item.taxAmount.toFixed(2)}</div>
@@ -521,79 +534,45 @@ export default function PurchaseDetailPage({ params }: PageProps) {
                   <TableCell className="text-right font-bold text-slate-900 font-mono">
                     ₹{item.lineTotal.toFixed(2)}
                   </TableCell>
+                  <TableCell className="text-right font-bold text-emerald-700 font-mono">
+                    ₹{(item.recognizedValue || 0).toFixed(2)}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         </div>
-
-        {/* Mobile Cards View */}
-        <div className="sm:hidden divide-y divide-slate-100">
-          {purchase.items.map((item, idx) => (
-            <div key={idx} className="p-4 space-y-2">
-              <div className="flex items-start justify-between">
-                <div>
-                  <span className="text-xs font-bold text-slate-400 mr-2">#{idx + 1}</span>
-                  <span className="font-semibold text-slate-900">
-                    {item.productSnapshot?.name}
-                  </span>
-                  <p className="text-xs text-slate-400">
-                    {item.productSnapshot?.brand} {item.productSnapshot?.sku ? `• ${item.productSnapshot.sku}` : ""}
-                  </p>
-                </div>
-                <strong className="text-sm font-bold text-slate-900">
-                  ₹{item.lineTotal.toFixed(2)}
-                </strong>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 pt-2 text-xs text-slate-600">
-                <div>
-                  <span className="text-slate-400 block text-[11px]">Ordered / Received:</span>
-                  <span className="font-semibold text-slate-800">
-                    {item.orderedQty} {item.unit} (In: {item.receivedQty || 0})
-                  </span>
-                </div>
-                <div>
-                  <span className="text-slate-400 block text-[11px]">Unit Price & GST:</span>
-                  <span className="font-mono text-slate-800">
-                    ₹{item.unitPurchasePrice} + {item.taxRate}% GST
-                  </span>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
       </Card>
 
-      {/* Financial Breakdown & Audit Footer */}
+      {/* Receipts History & Financial Totals */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Amendments Log */}
+        {/* Inward Receipts History */}
         <Card className="border border-slate-200/80 shadow-sm p-4 sm:p-5">
           <CardHeader className="p-0 pb-3 border-b border-slate-100 flex-row items-center justify-between">
             <CardTitle className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-              <History className="w-4 h-4 text-[#176B3A]" />
-              Controlled Amendments Audit Trail
+              <Truck className="w-4 h-4 text-[#176B3A]" />
+              Stock Inward Receipts
             </CardTitle>
             <Badge variant="neutral" size="sm">
-              {purchase.amendments?.length || 0}
+              {purchase.receipts?.length || 0} Receipts
             </Badge>
           </CardHeader>
           <CardContent className="p-0 pt-3">
-            {!purchase.amendments || purchase.amendments.length === 0 ? (
+            {!purchase.receipts || purchase.receipts.length === 0 ? (
               <p className="text-xs text-slate-400 py-3">
-                No amendments recorded for this purchase order. Order remains in its original confirmed state.
+                No stock inward confirmed yet. Goods are pending receipt.
               </p>
             ) : (
               <div className="space-y-3">
-                {purchase.amendments.map((am, index) => (
+                {purchase.receipts.map((rec, index) => (
                   <div
                     key={index}
-                    className="p-3 bg-slate-50 border border-slate-200/80 rounded-lg text-xs space-y-1"
+                    className="p-3 bg-slate-50 border border-slate-200/80 rounded-lg text-xs space-y-1.5"
                   >
                     <div className="flex items-center justify-between font-semibold text-slate-800">
-                      <span>Amendment #{index + 1}</span>
+                      <span className="font-mono text-[#176B3A]">{rec.receiptNumber}</span>
                       <span className="text-[11px] text-slate-400">
-                        {new Date(am.amendedAt).toLocaleDateString("en-IN", {
+                        {new Date(rec.receiptDate).toLocaleDateString("en-IN", {
                           day: "numeric",
                           month: "short",
                           year: "numeric",
@@ -602,15 +581,17 @@ export default function PurchaseDetailPage({ params }: PageProps) {
                         })}
                       </span>
                     </div>
-                    <p className="text-slate-600">
-                      <strong>Reason: </strong>
-                      {am.reason}
-                    </p>
-                    <div className="flex items-center justify-between text-slate-500 pt-1 border-t border-slate-200/60 mt-1">
-                      <span>Previous Total: ₹{am.previousGrandTotal.toFixed(2)}</span>
-                      <span className="font-semibold text-slate-900">
-                        New Total: ₹{(am.revisedGrandTotal ?? am.newGrandTotal ?? 0).toFixed(2)}
-                      </span>
+                    <div className="text-slate-600">
+                      <strong>Received By: </strong> {rec.receivedByName}
+                    </div>
+                    {rec.notes && (
+                      <p className="text-slate-500 italic">Notes: {rec.notes}</p>
+                    )}
+                    <div className="pt-1 border-t border-slate-200/60 flex items-center justify-between text-slate-700">
+                      <span>Recognized Value:</span>
+                      <strong className="text-emerald-700 font-mono">
+                        +₹{rec.totalRecognizedValue.toFixed(2)}
+                      </strong>
                     </div>
                   </div>
                 ))}
@@ -623,61 +604,311 @@ export default function PurchaseDetailPage({ params }: PageProps) {
         <Card className="border border-slate-200/80 shadow-sm p-4 sm:p-5 bg-white">
           <CardHeader className="p-0 pb-3 border-b border-slate-100">
             <CardTitle className="text-sm font-bold text-slate-900 uppercase tracking-wider">
-              Financial Summary
+              Financial Breakdown
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0 pt-3 space-y-2 text-xs sm:text-sm">
             <div className="flex items-center justify-between text-slate-600">
-              <span>Taxable Subtotal:</span>
-              <span className="font-semibold text-slate-800">
-                ₹{purchase.subtotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-              </span>
-            </div>
-
-            {purchase.discountAmount > 0 && (
-              <div className="flex items-center justify-between text-emerald-700">
-                <span>Total Discount:</span>
-                <span className="font-semibold">
-                  -₹{purchase.discountAmount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-                </span>
-              </div>
-            )}
-
-            <div className="flex items-center justify-between text-slate-600">
-              <span>GST Tax Amount:</span>
-              <span className="font-semibold text-slate-800">
-                +₹{purchase.taxAmount.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
-              </span>
-            </div>
-
-            <div className="pt-3 border-t border-slate-200 flex items-center justify-between">
-              <span className="text-sm font-bold text-slate-900">Grand Total:</span>
-              <span className="text-xl font-bold text-[#176B3A]">
+              <span>Invoice Total (Invoiced):</span>
+              <span className="font-semibold text-slate-900">
                 ₹{purchase.grandTotal.toLocaleString("en-IN", { minimumFractionDigits: 2 })}
               </span>
             </div>
 
-            <div className="p-2.5 rounded bg-amber-50/80 border border-amber-200/60 text-[11px] text-amber-800 flex items-start gap-2 mt-2">
-              <Info className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+            <div className="flex items-center justify-between text-emerald-800 font-medium">
+              <span>Recognized Value (Received):</span>
+              <span className="font-bold">
+                ₹{(purchase.recognizedInvoiceValue || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between text-slate-600">
+              <span>Amount Paid:</span>
+              <span className="font-semibold text-emerald-700">
+                ₹{(purchase.amountPaid || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+
+            <div className="pt-3 border-t border-slate-200 flex items-center justify-between">
+              <span className="text-sm font-bold text-slate-900">Net Outstanding:</span>
+              <span className="text-xl font-bold text-amber-700">
+                ₹{(purchase.outstandingAmount || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+              </span>
+            </div>
+
+            <div className="p-2.5 rounded bg-emerald-50 border border-emerald-200/60 text-[11px] text-emerald-800 flex items-start gap-2 mt-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
               <span>
-                <strong>Zero Liability Invariant (Phase 5B):</strong> Supplier payable liability is NOT recognized until Goods Received Notes (GRN) are verified in Phase 5C.
+                <strong>Accurate Payable Recognition:</strong> Supplier payable is recognized in exact proportion to confirmed goods receipts, protecting against overpayment on unreceived goods.
               </span>
             </div>
           </CardContent>
         </Card>
       </div>
 
+      {/* Inward Confirmation Modal */}
+      <Dialog
+        open={isInwardOpen}
+        onOpenChange={setIsInwardOpen}
+        title={`Receive / Inward Stock: ${purchase.purchaseNumber}`}
+        maxWidth="lg"
+      >
+        <div className="space-y-4">
+          <p className="text-xs text-slate-500">
+            Confirm goods physically received into stock. This atomically updates product stock, batch inventories, and vendor payable balance.
+          </p>
+
+          <div className="max-h-96 overflow-y-auto space-y-4 pr-1">
+            {inwardItems.map((item, idx) => (
+              <div
+                key={idx}
+                className="p-3.5 rounded-lg border border-slate-200 bg-slate-50 space-y-3 text-xs"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-slate-800 text-sm">
+                    {idx + 1}. {item.productName}
+                  </span>
+                  <Badge variant="neutral" size="sm">
+                    Remaining: {item.remainingQty} {item.primaryUnit}
+                  </Badge>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                      Received Quantity ({item.primaryUnit}) *
+                    </label>
+                    <Input
+                      type="number"
+                      step="any"
+                      min="0"
+                      max={item.remainingQty}
+                      value={item.receivedQty}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value) || 0;
+                        setInwardItems((prev) =>
+                          prev.map((it, i) =>
+                            i === idx
+                              ? {
+                                  ...it,
+                                  receivedQty: val,
+                                  batches: it.batches.map((b, bI) =>
+                                    bI === 0 ? { ...b, quantity: val } : b
+                                  ),
+                                }
+                              : it
+                          )
+                        );
+                      }}
+                      className="h-8 text-xs bg-white font-bold"
+                    />
+                  </div>
+                </div>
+
+                {/* Batch entry */}
+                <div className="p-2.5 bg-white rounded border border-slate-200/80 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold text-slate-700 text-[11px] flex items-center gap-1">
+                      <Box className="w-3 h-3 text-emerald-700" />
+                      Batch Information
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setInwardItems((prev) =>
+                          prev.map((it, i) =>
+                            i === idx
+                              ? {
+                                  ...it,
+                                  batches: [
+                                    ...it.batches,
+                                    {
+                                      batchNumber: "",
+                                      quantity: 0,
+                                    },
+                                  ],
+                                }
+                              : it
+                          )
+                        );
+                      }}
+                      className="text-[10px] text-[#176B3A] font-semibold hover:underline"
+                    >
+                      + Split Batch
+                    </button>
+                  </div>
+
+                  {item.batches.map((b, bI) => (
+                    <div key={bI} className="grid grid-cols-1 sm:grid-cols-4 gap-2 items-center text-xs">
+                      <div>
+                        <Input
+                          placeholder="Batch # *"
+                          value={b.batchNumber}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setInwardItems((prev) =>
+                              prev.map((it, i) =>
+                                i === idx
+                                  ? {
+                                      ...it,
+                                      batches: it.batches.map((bat, batI) =>
+                                        batI === bI ? { ...bat, batchNumber: val } : bat
+                                      ),
+                                    }
+                                  : it
+                              )
+                            );
+                          }}
+                          className="h-8 text-xs uppercase font-mono bg-slate-50"
+                        />
+                      </div>
+                      <div>
+                        <Input
+                          type="date"
+                          title="Mfg Date"
+                          value={b.manufacturingDate || ""}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setInwardItems((prev) =>
+                              prev.map((it, i) =>
+                                i === idx
+                                  ? {
+                                      ...it,
+                                      batches: it.batches.map((bat, batI) =>
+                                        batI === bI ? { ...bat, manufacturingDate: val } : bat
+                                      ),
+                                    }
+                                  : it
+                              )
+                            );
+                          }}
+                          className="h-8 text-xs bg-slate-50"
+                        />
+                      </div>
+                      <div>
+                        <Input
+                          type="date"
+                          title="Expiry Date"
+                          value={b.expiryDate || ""}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setInwardItems((prev) =>
+                              prev.map((it, i) =>
+                                i === idx
+                                  ? {
+                                      ...it,
+                                      batches: it.batches.map((bat, batI) =>
+                                        batI === bI ? { ...bat, expiryDate: val } : bat
+                                      ),
+                                    }
+                                  : it
+                              )
+                            );
+                          }}
+                          className="h-8 text-xs bg-slate-50"
+                        />
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Input
+                          type="number"
+                          step="any"
+                          min="0.01"
+                          placeholder="Batch Qty"
+                          value={b.quantity}
+                          onChange={(e) => {
+                            const val = parseFloat(e.target.value) || 0;
+                            setInwardItems((prev) =>
+                              prev.map((it, i) =>
+                                i === idx
+                                  ? {
+                                      ...it,
+                                      batches: it.batches.map((bat, batI) =>
+                                        batI === bI ? { ...bat, quantity: val } : bat
+                                      ),
+                                    }
+                                  : it
+                              )
+                            );
+                          }}
+                          className="h-8 text-xs bg-slate-50 w-20"
+                        />
+                        {item.batches.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setInwardItems((prev) =>
+                                prev.map((it, i) =>
+                                  i === idx
+                                    ? {
+                                        ...it,
+                                        batches: it.batches.filter((_, batI) => batI !== bI),
+                                      }
+                                    : it
+                                )
+                              );
+                            }}
+                            className="text-slate-400 hover:text-rose-600 p-1"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Receipt Remarks / Lorry LR Number (Optional)
+            </label>
+            <Input
+              placeholder="e.g. Received via Transport Truck TN-45-1234, in good condition"
+              value={inwardNotes}
+              onChange={(e) => setInwardNotes(e.target.value)}
+              className="text-xs"
+            />
+          </div>
+
+          {inwardError && (
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded text-xs text-rose-700">
+              {inwardError}
+            </div>
+          )}
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={inwarding}
+              onClick={() => setIsInwardOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              loading={inwarding}
+              onClick={handleConfirmInward}
+            >
+              Confirm Inward Stock
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+
       {/* Cancellation Dialog */}
       <Dialog
         open={isCancelOpen}
         onOpenChange={setIsCancelOpen}
-        title="Cancel Purchase Order"
+        title="Cancel Purchase Bill"
         maxWidth="md"
       >
         <div className="space-y-4">
           <p className="text-sm text-slate-600">
-            Are you sure you want to cancel purchase order <strong>{purchase.purchaseNumber}</strong>?
-            This will mark the purchase order as CANCELLED.
+            Are you sure you want to cancel purchase bill <strong>{purchase.purchaseNumber}</strong>?
           </p>
 
           <div>
@@ -685,7 +916,7 @@ export default function PurchaseDetailPage({ params }: PageProps) {
               Cancellation Reason *
             </label>
             <Input
-              placeholder="e.g. Supplier unable to fulfill order, duplicate entry..."
+              placeholder="Reason for cancellation..."
               value={cancelReason}
               onChange={(e) => setCancelReason(e.target.value)}
               className="text-sm"
@@ -714,136 +945,6 @@ export default function PurchaseDetailPage({ params }: PageProps) {
               onClick={handleConfirmCancel}
             >
               Confirm Cancellation
-            </Button>
-          </div>
-        </div>
-      </Dialog>
-
-      {/* Amend Dialog */}
-      <Dialog
-        open={isAmendOpen}
-        onOpenChange={setIsAmendOpen}
-        title={`Amend Order: ${purchase.purchaseNumber}`}
-        maxWidth="lg"
-      >
-        <div className="space-y-4">
-          <p className="text-xs text-slate-500">
-            Controlled amendments allow revising ordered quantities and pricing. Any amendment is permanently logged in the audit trail.
-          </p>
-
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Reason for Amendment * (Minimum 5 characters)
-            </label>
-            <Input
-              placeholder="e.g. Supplier confirmed updated quantity of 120 Bags..."
-              value={amendReason}
-              onChange={(e) => setAmendReason(e.target.value)}
-              className="text-sm"
-            />
-          </div>
-
-          <div className="max-h-80 overflow-y-auto space-y-3 pr-1">
-            {amendItems.map((item, idx) => (
-              <div
-                key={idx}
-                className="p-3 rounded-lg border border-slate-200 bg-slate-50 space-y-2 text-xs"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-slate-800">
-                    {idx + 1}. {item.productName}
-                  </span>
-                  {item.receivedQty > 0 && (
-                    <Badge variant="warning" size="sm">
-                      Received: {item.receivedQty} {item.primaryUnit} (Floor Limit)
-                    </Badge>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-3 gap-2">
-                  <div>
-                    <label className="block text-[11px] text-slate-500 mb-0.5">
-                      Ordered Qty ({item.primaryUnit})
-                    </label>
-                    <Input
-                      type="number"
-                      step="any"
-                      min={item.receivedQty || 0.01}
-                      value={item.orderedQty}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value) || 0;
-                        setAmendItems((prev) =>
-                          prev.map((it, i) => (i === idx ? { ...it, orderedQty: val } : it))
-                        );
-                      }}
-                      className="h-8 text-xs bg-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] text-slate-500 mb-0.5">
-                      Unit Price (₹)
-                    </label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={item.unitPurchasePrice}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value) || 0;
-                        setAmendItems((prev) =>
-                          prev.map((it, i) => (i === idx ? { ...it, unitPurchasePrice: val } : it))
-                        );
-                      }}
-                      className="h-8 text-xs bg-white"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] text-slate-500 mb-0.5">
-                      Discount (₹)
-                    </label>
-                    <Input
-                      type="number"
-                      step="0.01"
-                      min="0"
-                      value={item.discountAmount}
-                      onChange={(e) => {
-                        const val = parseFloat(e.target.value) || 0;
-                        setAmendItems((prev) =>
-                          prev.map((it, i) => (i === idx ? { ...it, discountAmount: val } : it))
-                        );
-                      }}
-                      className="h-8 text-xs bg-white"
-                    />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          {amendError && (
-            <div className="p-3 bg-rose-50 border border-rose-200 rounded text-xs text-rose-700">
-              {amendError}
-            </div>
-          )}
-
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={amending}
-              onClick={() => setIsAmendOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              loading={amending}
-              onClick={handleConfirmAmend}
-            >
-              Apply Amendment
             </Button>
           </div>
         </div>
