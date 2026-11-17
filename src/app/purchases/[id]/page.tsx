@@ -39,6 +39,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
+import { RecordPaymentDialog } from "@/components/supplier-payments";
 import type { IPurchase, PurchaseStatus, PurchasePaymentStatus } from "@/types/purchase";
 
 interface PageProps {
@@ -94,6 +95,9 @@ export default function PurchaseDetailPage({ params }: PageProps) {
   const [amendItems, setAmendItems] = useState<any[]>([]);
   const [amending, setAmending] = useState(false);
   const [amendError, setAmendError] = useState("");
+
+  // Supplier Payment dialog state (Phase 5D)
+  const [isPaymentOpen, setIsPaymentOpen] = useState(false);
 
   // Fetch purchase details
   useEffect(() => {
@@ -324,6 +328,10 @@ export default function PurchaseDetailPage({ params }: PageProps) {
     purchase.status !== "RECEIVED" &&
     (purchase.receivedQty || 0) === 0;
 
+  const canSettlePayment =
+    (purchase.status === "RECEIVED" || purchase.status === "PARTIALLY_RECEIVED") &&
+    (purchase.outstandingAmount || 0) > 0.01;
+
   return (
     <div className="space-y-6 pb-16 max-w-6xl mx-auto">
       {/* Top Header & Actions */}
@@ -355,9 +363,20 @@ export default function PurchaseDetailPage({ params }: PageProps) {
 
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
-          {canInward && (
+          {canSettlePayment && (
             <Button
               variant="primary"
+              size="sm"
+              onClick={() => setIsPaymentOpen(true)}
+              leftIcon={<CreditCard className="w-4 h-4" />}
+            >
+              Settle Payment
+            </Button>
+          )}
+
+          {canInward && (
+            <Button
+              variant={canSettlePayment ? "outline" : "primary"}
               size="sm"
               onClick={openInwardModal}
               leftIcon={<Truck className="w-4 h-4" />}
@@ -659,6 +678,39 @@ export default function PurchaseDetailPage({ params }: PageProps) {
                 ₹{(purchase.outstandingAmount || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
               </span>
             </div>
+
+            {purchase.advanceAdjustments && purchase.advanceAdjustments.length > 0 && (
+              <div className="pt-2 border-t border-slate-100 text-xs space-y-1.5 bg-slate-50 p-2.5 rounded-lg">
+                <span className="text-[11px] font-bold text-emerald-800 flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                  Advances Absorbed from Prior Payments ({purchase.advanceAdjustments.length}):
+                </span>
+                <div className="space-y-1 pl-1">
+                  {purchase.advanceAdjustments.map((adj: any, i: number) => (
+                    <div key={i} className="flex justify-between items-center text-[11px] text-slate-600 border-b border-slate-200/50 pb-1">
+                      <span>Voucher: <strong className="text-slate-800 font-mono">{adj.paymentNumber}</strong></span>
+                      <strong className="text-emerald-700 font-mono">
+                        ₹{(adj.amount || 0).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                      </strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {canSettlePayment && (
+              <div className="pt-2">
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => setIsPaymentOpen(true)}
+                  className="w-full gap-2 shadow-xs"
+                >
+                  <CreditCard className="w-4 h-4" />
+                  <span>Settle Payment (₹{(purchase.outstandingAmount || 0).toFixed(2)})</span>
+                </Button>
+              </div>
+            )}
 
             <div className="p-2.5 rounded bg-emerald-50 border border-emerald-200/60 text-[11px] text-emerald-800 flex items-start gap-2 mt-2">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
@@ -973,6 +1025,19 @@ export default function PurchaseDetailPage({ params }: PageProps) {
           </div>
         </div>
       </Dialog>
+
+      {/* Phase 5D Record Payment Modal */}
+      {purchase && (
+        <RecordPaymentDialog
+          open={isPaymentOpen}
+          onOpenChange={setIsPaymentOpen}
+          supplierId={purchase.supplierId}
+          supplierName={purchase.supplierSnapshot?.name || "Supplier"}
+          prefilledPurchaseId={purchase.id || purchase._id}
+          prefilledAmount={purchase.outstandingAmount}
+          onSuccess={() => setRefreshKey((k) => k + 1)}
+        />
+      )}
     </div>
   );
 }

@@ -89,6 +89,13 @@ export interface IPurchaseAmendment {
   newGrandTotal?: number;
 }
 
+export interface IPurchaseAdvanceAdjustment {
+  paymentId: string;
+  paymentNumber: string;
+  amount: number;
+  adjustedAt: string | Date;
+}
+
 export interface IPurchase {
   id: string;
   _id?: string;
@@ -111,6 +118,7 @@ export interface IPurchase {
   outstandingAmount: number; // Math.max(0, recognizedInvoiceValue - amountPaid)
   paymentStatus: PurchasePaymentStatus;
   status: PurchaseStatus;
+  advanceAdjustments?: IPurchaseAdvanceAdjustment[];
   receipts?: IPurchaseReceipt[];
   amendments: IPurchaseAmendment[];
   notes?: string;

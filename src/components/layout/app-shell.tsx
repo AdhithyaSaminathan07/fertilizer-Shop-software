@@ -16,11 +16,19 @@ interface AppShellProps {
   children: React.ReactNode;
 }
 
+const AppShellContext = React.createContext<boolean>(false);
+
 export function AppShell({ children }: AppShellProps) {
   const pathname = usePathname();
+  const isInsideAppShell = React.useContext(AppShellContext);
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState(false);
   const [mobileDrawerOpen, setMobileDrawerOpen] = React.useState(false);
   const [quickBillOpen, setQuickBillOpen] = React.useState(false);
+
+  // If already inside an AppShell (e.g. from RootLayout), do not render duplicate chrome
+  if (isInsideAppShell) {
+    return <>{children}</>;
+  }
 
   // If on login page, render clean standalone view without app chrome
   if (pathname === "/login") {
@@ -28,37 +36,38 @@ export function AppShell({ children }: AppShellProps) {
   }
 
   return (
-    <div className="relative flex h-screen h-[100dvh] w-full overflow-hidden bg-[#F7F9F6] text-slate-900 font-sans antialiased">
-      {/* Desktop Fixed Sidebar */}
-      <Sidebar
-        collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-      />
-
-      {/* Mobile Drawer */}
-      <MobileDrawer
-        open={mobileDrawerOpen}
-        onClose={() => setMobileDrawerOpen(false)}
-      />
-
-      {/* Main Content Area with responsive desktop offset */}
-      <div
-        className={cn(
-          "flex flex-1 flex-col h-full h-[100dvh] min-w-0 overflow-hidden transition-[padding-left] duration-200 ease-in-out",
-          sidebarCollapsed ? "lg:pl-20" : "lg:pl-[280px]"
-        )}
-      >
-        {/* Top Navigation - fixed at top */}
-        <TopNav
-          onOpenMobileDrawer={() => setMobileDrawerOpen(true)}
-          onOpenQuickBillModal={() => setQuickBillOpen(true)}
+    <AppShellContext.Provider value={true}>
+      <div className="relative flex h-screen h-[100dvh] w-full overflow-hidden bg-[#F7F9F6] text-slate-900 font-sans antialiased">
+        {/* Desktop Fixed Sidebar */}
+        <Sidebar
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         />
 
-        {/* Page Content Container - scrolls independently */}
-        <main className="flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-8 overscroll-contain">
-          <div className="mx-auto max-w-7xl">{children}</div>
-        </main>
-      </div>
+        {/* Mobile Drawer */}
+        <MobileDrawer
+          open={mobileDrawerOpen}
+          onClose={() => setMobileDrawerOpen(false)}
+        />
+
+        {/* Main Content Area with responsive desktop offset */}
+        <div
+          className={cn(
+            "flex flex-1 flex-col h-full h-[100dvh] min-w-0 overflow-hidden transition-[padding-left] duration-200 ease-in-out",
+            sidebarCollapsed ? "lg:pl-20" : "lg:pl-[280px]"
+          )}
+        >
+          {/* Top Navigation - fixed at top */}
+          <TopNav
+            onOpenMobileDrawer={() => setMobileDrawerOpen(true)}
+            onOpenQuickBillModal={() => setQuickBillOpen(true)}
+          />
+
+          {/* Page Content Container - scrolls independently */}
+          <main className="flex-1 overflow-y-auto overflow-x-hidden p-4 sm:p-6 lg:p-8 overscroll-contain min-w-0">
+            <div className="mx-auto max-w-7xl w-full min-w-0">{children}</div>
+          </main>
+        </div>
 
       {/* Reusable Quick Bill Dialog Preview */}
       <Dialog
@@ -137,5 +146,6 @@ export function AppShell({ children }: AppShellProps) {
         </div>
       </Dialog>
     </div>
+    </AppShellContext.Provider>
   );
 }

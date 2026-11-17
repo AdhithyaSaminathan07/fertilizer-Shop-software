@@ -22,13 +22,23 @@ import {
   Calendar,
   CheckCircle2,
   RefreshCw,
+  Search,
+  Filter,
+  Plus,
+  RotateCcw,
+  Sparkles,
+  ChevronLeft,
+  ChevronRight,
+  Eye,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Dialog } from "@/components/ui/dialog";
+import { RecordPaymentDialog, PaymentDetailsDialog } from "@/components/supplier-payments";
 import type { ISupplier, SupplierStatus } from "@/types/supplier";
+import type { ISupplierPayment, SupplierPaymentMethod, SupplierPaymentStatus } from "@/types/supplier-payment";
 
 export default function SupplierProfilePage() {
   const params = useParams();
@@ -41,6 +51,27 @@ export default function SupplierProfilePage() {
   const [activeTab, setActiveTab] = useState<"overview" | "purchases" | "payments">("overview");
   const [purchases, setPurchases] = useState<any[]>([]);
   const [purchasesLoading, setPurchasesLoading] = useState(false);
+
+  // Payment vouchers state
+  const [payments, setPayments] = useState<ISupplierPayment[]>([]);
+  const [paymentsLoading, setPaymentsLoading] = useState(false);
+  const [paymentsPage, setPaymentsPage] = useState(1);
+  const [paymentsTotalPages, setPaymentsTotalPages] = useState(1);
+  const [paymentsTotalCount, setPaymentsTotalCount] = useState(0);
+  const [paymentsStats, setPaymentsStats] = useState({
+    totalRecordedAmount: 0,
+    totalAllocatedAmount: 0,
+    totalUnallocatedAdvance: 0,
+    reversedCount: 0,
+  });
+  const [paymentSearch, setPaymentSearch] = useState("");
+  const [paymentMethodFilter, setPaymentMethodFilter] = useState<string>("ALL");
+  const [paymentStatusFilter, setPaymentStatusFilter] = useState<string>("ALL");
+
+  // Payment modals state
+  const [isRecordPaymentOpen, setIsRecordPaymentOpen] = useState(false);
+  const [selectedPayment, setSelectedPayment] = useState<ISupplierPayment | null>(null);
+  const [isPaymentDetailsOpen, setIsPaymentDetailsOpen] = useState(false);
 
   // Edit dialog state
   const [isEditOpen, setIsEditOpen] = useState(false);
@@ -111,6 +142,50 @@ export default function SupplierProfilePage() {
       isMounted = false;
     };
   }, [id, activeTab]);
+
+  useEffect(() => {
+    if (!id || activeTab !== "payments") return;
+    let isMounted = true;
+
+    const queryParams = new URLSearchParams({
+      supplierId: id,
+      page: String(paymentsPage),
+      limit: "10",
+    });
+
+    if (paymentSearch.trim()) {
+      queryParams.set("search", paymentSearch.trim());
+    }
+    if (paymentMethodFilter !== "ALL") {
+      queryParams.set("paymentMethod", paymentMethodFilter);
+    }
+    if (paymentStatusFilter !== "ALL") {
+      queryParams.set("status", paymentStatusFilter);
+    }
+
+    fetch(`/api/supplier-payments?${queryParams.toString()}`, {
+      credentials: "same-origin",
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (isMounted && data.success && data.data) {
+          setPayments(data.data.payments || []);
+          setPaymentsTotalCount(data.data.totalCount || 0);
+          setPaymentsTotalPages(data.data.totalPages || 1);
+          if (data.data.stats) {
+            setPaymentsStats(data.data.stats);
+          }
+        }
+      })
+      .catch((err) => console.error("Error loading supplier payments:", err))
+      .finally(() => {
+        if (isMounted) setPaymentsLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [id, activeTab, paymentsPage, paymentSearch, paymentMethodFilter, paymentStatusFilter, refreshKey]);
 
   const handleOpenEdit = () => {
     if (!supplier) return;
@@ -306,25 +381,41 @@ export default function SupplierProfilePage() {
               </div>
             </div>
 
-            <div className="rounded-xl bg-white/10 p-4 text-left sm:text-right backdrop-blur-md">
-              <p className="text-xs font-medium uppercase tracking-wider text-slate-300">
-                Outstanding Balance
-              </p>
-              <p className="mt-1 text-2xl font-bold text-amber-400">
-                {formatCurrency(supplier.outstandingBalance)}
-              </p>
-              <p className="mt-0.5 text-[11px] text-slate-300">
-                Net recognized payable balance
-              </p>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="rounded-xl bg-white/10 p-4 text-left sm:text-right backdrop-blur-md">
+                <p className="text-xs font-medium uppercase tracking-wider text-slate-300">
+                  Outstanding Balance
+                </p>
+                <p className="mt-1 text-2xl font-bold text-amber-400">
+                  {formatCurrency(supplier.outstandingBalance)}
+                </p>
+                <p className="mt-0.5 text-[11px] text-slate-300">
+                  Net recognized payable balance
+                </p>
+              </div>
+
+              {(supplier.advanceBalance || 0) > 0 && (
+                <div className="rounded-xl bg-emerald-500/20 border border-emerald-400/30 p-4 text-left sm:text-right backdrop-blur-md">
+                  <p className="text-xs font-medium uppercase tracking-wider text-emerald-200">
+                    Available Advance
+                  </p>
+                  <p className="mt-1 text-2xl font-bold text-emerald-300">
+                    {formatCurrency(supplier.advanceBalance || 0)}
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-emerald-200">
+                    Advance credit on vendor account
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Financial Summary Grid (Accurate Phase 5A initialized balances) */}
-        <div className="grid grid-cols-1 divide-y divide-slate-100 border-b border-slate-100 sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+        {/* Financial Summary Grid (Accurate Phase 5D initialized balances) */}
+        <div className="grid grid-cols-1 divide-y divide-slate-100 border-b border-slate-100 sm:grid-cols-4 sm:divide-x sm:divide-y-0">
           <div className="p-4 sm:p-5">
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-              Total Recognized Purchases
+              Total Purchases
             </p>
             <p className="mt-1 text-xl font-bold text-slate-900">
               {formatCurrency(supplier.totalPurchases)}
@@ -355,6 +446,18 @@ export default function SupplierProfilePage() {
             </p>
             <p className="mt-0.5 text-xs text-slate-500">
               Pending invoice settlement
+            </p>
+          </div>
+
+          <div className={`p-4 sm:p-5 ${(supplier.advanceBalance || 0) > 0 ? "bg-emerald-50/50" : ""}`}>
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Available Advance
+            </p>
+            <p className="mt-1 text-xl font-bold text-emerald-800">
+              {formatCurrency(supplier.advanceBalance || 0)}
+            </p>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Unallocated credit for future bills
             </p>
           </div>
         </div>
@@ -388,14 +491,17 @@ export default function SupplierProfilePage() {
           </button>
           <button
             type="button"
-            onClick={() => setActiveTab("payments")}
+            onClick={() => {
+              setActiveTab("payments");
+              setPaymentsLoading(true);
+            }}
             className={`border-b-2 px-4 py-3 text-sm font-semibold transition-colors ${
               activeTab === "payments"
                 ? "border-emerald-700 text-emerald-800"
                 : "border-transparent text-slate-500 hover:text-slate-800"
             }`}
           >
-            Payment Vouchers (Phase 5D)
+            Payment Vouchers {paymentsTotalCount > 0 ? `(${paymentsTotalCount})` : ""}
           </button>
         </div>
 
@@ -566,14 +672,374 @@ export default function SupplierProfilePage() {
           )}
 
           {activeTab === "payments" && (
-            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
-              <CreditCard className="mx-auto h-12 w-12 text-slate-300" />
-              <h4 className="mt-3 text-base font-semibold text-slate-800">
-                Payment Settlements Ready for Phase 5D
-              </h4>
-              <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">
-                Supplier payment vouchers, bank transfers, UPI settlements, and invoice reconciliations will be connected in Phase 5D.
-              </p>
+            <div className="space-y-5">
+              {/* Payments Header & Quick Action */}
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                    <CreditCard className="h-4 w-4 text-[#176B3A]" />
+                    Payment Vouchers & Settlements
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Complete history of payment disbursements, allocations, and advances for {supplier.name}.
+                  </p>
+                </div>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => setIsRecordPaymentOpen(true)}
+                  className="gap-1.5 self-start sm:self-auto shadow-xs"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>Record Supplier Payment</span>
+                </Button>
+              </div>
+
+              {/* KPI Aggregate Stats Chips */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-xs">
+                  <span className="text-[11px] text-slate-400 font-medium block">Total Recorded</span>
+                  <strong className="text-sm font-bold text-slate-900">
+                    {formatCurrency(paymentsStats.totalRecordedAmount)}
+                  </strong>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-xs">
+                  <span className="text-[11px] text-slate-400 font-medium block">Settled to Invoices</span>
+                  <strong className="text-sm font-bold text-[#176B3A]">
+                    {formatCurrency(paymentsStats.totalAllocatedAmount)}
+                  </strong>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-xs">
+                  <span className="text-[11px] text-slate-400 font-medium block">Unallocated Advance</span>
+                  <strong className="text-sm font-bold text-amber-700">
+                    {formatCurrency(paymentsStats.totalUnallocatedAdvance)}
+                  </strong>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-white p-3 shadow-xs">
+                  <span className="text-[11px] text-slate-400 font-medium block">Reversed Vouchers</span>
+                  <strong className="text-sm font-bold text-slate-600">
+                    {paymentsStats.reversedCount} {paymentsStats.reversedCount === 1 ? "voucher" : "vouchers"}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Search & Filters Bar */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-2.5 h-3.5 w-3.5 text-slate-400" />
+                  <Input
+                    placeholder="Search by payment #, UTR, cheque, or reference..."
+                    value={paymentSearch}
+                    onChange={(e) => {
+                      setPaymentSearch(e.target.value);
+                      setPaymentsPage(1);
+                    }}
+                    className="h-8 pl-8 text-xs bg-white"
+                  />
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <select
+                    value={paymentMethodFilter}
+                    onChange={(e) => {
+                      setPaymentMethodFilter(e.target.value);
+                      setPaymentsPage(1);
+                    }}
+                    className="h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 focus:border-[#176B3A] focus:outline-none"
+                  >
+                    <option value="ALL">All Methods</option>
+                    <option value="CASH">Cash</option>
+                    <option value="UPI">UPI</option>
+                    <option value="BANK_TRANSFER">Bank Transfer</option>
+                    <option value="CHEQUE">Cheque</option>
+                  </select>
+
+                  <select
+                    value={paymentStatusFilter}
+                    onChange={(e) => {
+                      setPaymentStatusFilter(e.target.value);
+                      setPaymentsPage(1);
+                    }}
+                    className="h-8 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 focus:border-[#176B3A] focus:outline-none"
+                  >
+                    <option value="ALL">All Status</option>
+                    <option value="RECORDED">Recorded</option>
+                    <option value="REVERSED">Reversed</option>
+                  </select>
+
+                  {(paymentSearch || paymentMethodFilter !== "ALL" || paymentStatusFilter !== "ALL") && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setPaymentSearch("");
+                        setPaymentMethodFilter("ALL");
+                        setPaymentStatusFilter("ALL");
+                        setPaymentsPage(1);
+                      }}
+                      className="h-8 text-xs text-slate-500 hover:text-slate-800"
+                    >
+                      Reset
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              {/* Payments List / Table */}
+              {paymentsLoading ? (
+                <div className="p-12 text-center text-slate-400">
+                  <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-[#176B3A]" />
+                  <p className="text-xs font-medium">Loading payment vouchers...</p>
+                </div>
+              ) : payments.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50/50 p-8 text-center">
+                  <CreditCard className="mx-auto h-12 w-12 text-slate-300" />
+                  <h4 className="mt-3 text-base font-semibold text-slate-800">
+                    No Payment Vouchers Found
+                  </h4>
+                  <p className="mx-auto mt-1 max-w-md text-xs text-slate-500">
+                    {paymentSearch || paymentMethodFilter !== "ALL" || paymentStatusFilter !== "ALL"
+                      ? "No payment records match your active search and filter criteria."
+                      : "No payment vouchers have been issued to this supplier yet. Click below to record your first payment."}
+                  </p>
+                  <div className="mt-4">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setIsRecordPaymentOpen(true)}
+                      className="gap-1.5"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      <span>Record Payment</span>
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {/* Desktop Table View */}
+                  <div className="hidden md:block overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xs">
+                    <table className="w-full text-left text-xs text-slate-600">
+                      <thead className="bg-slate-50 font-semibold text-slate-700 border-b border-slate-200">
+                        <tr>
+                          <th className="p-3">Voucher #</th>
+                          <th className="p-3">Date</th>
+                          <th className="p-3">Method & Ref</th>
+                          <th className="p-3">Type</th>
+                          <th className="p-3">Settled Invoices</th>
+                          <th className="p-3 text-right">Voucher Amount</th>
+                          <th className="p-3 text-right">Advance Credit</th>
+                          <th className="p-3 text-center">Status</th>
+                          <th className="p-3 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {payments.map((p) => {
+                          const isRev = p.status === "REVERSED";
+                          const totalAlloc = (p.allocations || []).reduce((s, a) => s + (a.allocatedAmount || 0), 0);
+                          return (
+                            <tr key={p.id || p._id} className="hover:bg-slate-50/60 transition-colors">
+                              <td className="p-3 font-semibold text-[#176B3A]">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedPayment(p);
+                                    setIsPaymentDetailsOpen(true);
+                                  }}
+                                  className="hover:underline font-mono"
+                                >
+                                  {p.paymentNumber}
+                                </button>
+                              </td>
+                              <td className="p-3">
+                                {new Date(p.paymentDate).toLocaleDateString("en-IN", {
+                                  day: "numeric",
+                                  month: "short",
+                                  year: "numeric",
+                                })}
+                              </td>
+                              <td className="p-3">
+                                <span className="font-medium text-slate-800">{p.paymentMethod}</span>
+                                {p.paymentReference && (
+                                  <span className="block font-mono text-[11px] text-slate-400">
+                                    {p.paymentReference}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3">
+                                {p.isExcessUpfrontCredit ? (
+                                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200/80 px-2 py-0.5 rounded-full">
+                                    <Sparkles className="h-3 w-3" />
+                                    Excess Upfront
+                                  </span>
+                                ) : p.unallocatedAmount > 0 && totalAlloc === 0 ? (
+                                  <span className="inline-flex items-center text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-200/80 px-2 py-0.5 rounded-full">
+                                    Advance Payment
+                                  </span>
+                                ) : p.unallocatedAmount > 0 ? (
+                                  <span className="inline-flex items-center text-[11px] font-medium text-slate-700 bg-slate-100 px-2 py-0.5 rounded-full">
+                                    Split (Alloc + Adv)
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center text-[11px] font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                                    Invoice Settlement
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-3">
+                                {p.allocations && p.allocations.length > 0 ? (
+                                  <div className="flex flex-col gap-0.5">
+                                    <span className="font-medium text-slate-800">
+                                      {p.allocations.length} {p.allocations.length === 1 ? "invoice" : "invoices"}
+                                    </span>
+                                    <span className="text-[10px] text-slate-400 font-mono">
+                                      {p.allocations.map((a) => a.purchaseNumber).slice(0, 2).join(", ")}
+                                      {p.allocations.length > 2 ? "..." : ""}
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <span className="text-slate-400 italic text-[11px]">Unallocated Advance</span>
+                                )}
+                              </td>
+                              <td className="p-3 text-right font-bold text-slate-900 font-mono">
+                                {formatCurrency(p.amount)}
+                              </td>
+                              <td className="p-3 text-right font-medium font-mono text-emerald-700">
+                                {p.unallocatedAmount > 0 ? formatCurrency(p.unallocatedAmount) : "—"}
+                              </td>
+                              <td className="p-3 text-center">
+                                <Badge
+                                  variant={isRev ? "danger" : "success"}
+                                  size="sm"
+                                >
+                                  {p.status}
+                                </Badge>
+                              </td>
+                              <td className="p-3 text-right">
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    setSelectedPayment(p);
+                                    setIsPaymentDetailsOpen(true);
+                                  }}
+                                  className="h-7 text-xs px-2 gap-1"
+                                >
+                                  <Eye className="h-3 w-3" />
+                                  <span>View</span>
+                                </Button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Mobile Card List View */}
+                  <div className="md:hidden space-y-3">
+                    {payments.map((p) => {
+                      const isRev = p.status === "REVERSED";
+                      return (
+                        <div
+                          key={p.id || p._id}
+                          className="rounded-xl border border-slate-200 bg-white p-4 space-y-2.5 shadow-xs text-xs"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono font-bold text-sm text-[#176B3A]">
+                              {p.paymentNumber}
+                            </span>
+                            <Badge
+                              variant={isRev ? "danger" : "success"}
+                              size="sm"
+                            >
+                              {p.status}
+                            </Badge>
+                          </div>
+
+                          <div className="flex items-center justify-between text-slate-500 text-[11px]">
+                            <span>
+                              {new Date(p.paymentDate).toLocaleDateString("en-IN", {
+                                day: "numeric",
+                                month: "short",
+                                year: "numeric",
+                              })}
+                            </span>
+                            <span className="font-medium text-slate-700">
+                              {p.paymentMethod} {p.paymentReference ? `(${p.paymentReference})` : ""}
+                            </span>
+                          </div>
+
+                          {p.isExcessUpfrontCredit && (
+                            <div className="flex items-center gap-1 text-[11px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 p-1.5 rounded">
+                              <Sparkles className="h-3 w-3" />
+                              <span>Purchase Upfront Excess Credit</span>
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                            <div>
+                              <span className="text-[10px] text-slate-400 block uppercase font-semibold">Total Amount</span>
+                              <strong className="text-base font-bold text-slate-900 font-mono">
+                                {formatCurrency(p.amount)}
+                              </strong>
+                            </div>
+
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setSelectedPayment(p);
+                                setIsPaymentDetailsOpen(true);
+                              }}
+                              className="gap-1"
+                            >
+                              <Eye className="h-3 w-3" />
+                              <span>Details</span>
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Pagination Controls */}
+                  {paymentsTotalPages > 1 && (
+                    <div className="flex items-center justify-between pt-3 border-t border-slate-200 text-xs text-slate-600">
+                      <span>
+                        Showing {payments.length} of {paymentsTotalCount} vouchers
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={paymentsPage <= 1}
+                          onClick={() => setPaymentsPage((p) => Math.max(1, p - 1))}
+                          className="h-8 px-2 gap-1 text-xs"
+                        >
+                          <ChevronLeft className="h-3.5 w-3.5" />
+                          <span>Previous</span>
+                        </Button>
+                        <span className="font-semibold text-slate-800">
+                          {paymentsPage} / {paymentsTotalPages}
+                        </span>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={paymentsPage >= paymentsTotalPages}
+                          onClick={() => setPaymentsPage((p) => Math.min(paymentsTotalPages, p + 1))}
+                          className="h-8 px-2 gap-1 text-xs"
+                        >
+                          <span>Next</span>
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </CardContent>
@@ -779,6 +1245,21 @@ export default function SupplierProfilePage() {
           </div>
         </div>
       </Dialog>
+      {/* Phase 5D Supplier Payment Modals */}
+      <RecordPaymentDialog
+        open={isRecordPaymentOpen}
+        onOpenChange={setIsRecordPaymentOpen}
+        supplierId={supplier.id}
+        supplierName={supplier.name}
+        onSuccess={() => setRefreshKey((k) => k + 1)}
+      />
+
+      <PaymentDetailsDialog
+        open={isPaymentDetailsOpen}
+        onOpenChange={setIsPaymentDetailsOpen}
+        payment={selectedPayment}
+        onSuccess={() => setRefreshKey((k) => k + 1)}
+      />
     </div>
   );
 }

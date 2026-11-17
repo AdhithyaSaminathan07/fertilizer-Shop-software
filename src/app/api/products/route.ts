@@ -22,6 +22,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const brand = searchParams.get("brand") || undefined;
   const stockStatus = searchParams.get("stockStatus") || undefined;
   const status = searchParams.get("status") || undefined;
+  const includeBatches = searchParams.get("includeBatches") === "true";
 
   try {
     const result = await listProducts({
@@ -32,8 +33,12 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       brand,
       stockStatus,
       status,
+      includeBatches,
     });
-    return successResponse(result);
+    return successResponse({
+      ...result,
+      products: result.items,
+    });
   } catch (err) {
     return errorResponse(err instanceof Error ? err.message : "Failed to load products", HTTP_STATUS.INTERNAL_SERVER_ERROR);
   }

@@ -27,6 +27,7 @@ export async function listProducts(options: {
   brand?: string;
   stockStatus?: string;
   status?: string;
+  includeBatches?: boolean;
 } = {}) {
   await connectDB();
 
@@ -81,6 +82,39 @@ export async function listProducts(options: {
     Product.countDocuments(query),
   ]);
 
+  const batchesByProduct: Record<string, any[]> = {};
+  if (options.includeBatches && products.length > 0) {
+    const prodIds = products.map((p: any) => p._id);
+    const now = new Date();
+    const batches = await Batch.find({
+      productId: { $in: prodIds },
+      status: "ACTIVE",
+      quantity: { $gt: 0 },
+      $or: [
+        { expiryDate: { $exists: false } },
+        { expiryDate: null },
+        { expiryDate: { $gte: now } },
+      ],
+    })
+      .sort({ expiryDate: 1, createdAt: 1 })
+      .lean();
+
+    for (const b of batches) {
+      const pid = (b.productId as any).toString();
+      if (!batchesByProduct[pid]) {
+        batchesByProduct[pid] = [];
+      }
+      batchesByProduct[pid].push({
+        _id: (b._id as any).toString(),
+        batchNumber: b.batchNumber,
+        expiryDate: b.expiryDate ? new Date(b.expiryDate).toISOString() : undefined,
+        quantity: b.quantity,
+        purchasePrice: b.purchasePrice,
+        status: b.status,
+      });
+    }
+  }
+
   const items = products.map((prod: any) => {
     const { margin, marginPercent } = calculateMargin(prod.purchasePrice, prod.sellingPrice);
     const stockStatus = getStockStatus(prod.currentStock || 0, prod.minStockThreshold || 10);
@@ -106,6 +140,7 @@ export async function listProducts(options: {
       status: prod.status,
       currentStock: prod.currentStock || 0,
       stockStatus,
+      batches: batchesByProduct[prod._id.toString()] || [],
       createdAt: prod.createdAt ? new Date(prod.createdAt).toISOString() : new Date().toISOString(),
       updatedAt: prod.updatedAt ? new Date(prod.updatedAt).toISOString() : new Date().toISOString(),
     };

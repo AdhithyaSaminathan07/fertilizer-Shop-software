@@ -53,6 +53,7 @@ export interface IProduct {
   primaryUnit: ProductUnit;
   unitConversion?: UnitConversion;
   minStockThreshold: number;
+  preferredReorderQty?: number;
   status: ProductStatus;
   currentStock: number;
   stockStatus: StockStatus;

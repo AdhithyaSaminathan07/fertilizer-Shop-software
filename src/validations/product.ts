@@ -45,9 +45,11 @@ export const createProductSchema = z
       .or(z.literal("")),
     brand: z
       .string()
-      .min(2, "Brand/Manufacturer must be at least 2 characters")
       .max(100, "Brand cannot exceed 100 characters")
-      .trim(),
+      .trim()
+      .optional()
+      .or(z.literal(""))
+      .transform((val) => (val && val.trim() ? val.trim() : "General")),
     categoryId: z
       .string()
       .regex(/^[0-9a-fA-F]{24}$/, "Valid category selection is required"),
@@ -57,7 +59,7 @@ export const createProductSchema = z
       .trim()
       .optional()
       .or(z.literal("")),
-    purchasePrice: z.number().min(0, "Purchase price cannot be negative"),
+    purchasePrice: z.number().min(0, "Purchase price cannot be negative").default(0),
     sellingPrice: z.number().min(0, "Selling price cannot be negative"),
     primaryUnit: UNIT_ENUM,
     unitConversion: unitConversionSchema,

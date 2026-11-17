@@ -106,6 +106,7 @@ export async function listSuppliers(params: SupplierFilterParams = {}): Promise<
     totalPurchases: doc.totalPurchases || 0,
     totalPaid: doc.totalPaid || 0,
     outstandingBalance: doc.outstandingBalance || 0,
+    advanceBalance: doc.advanceBalance || 0,
     createdAt: doc.createdAt ? doc.createdAt.toISOString() : new Date().toISOString(),
     updatedAt: doc.updatedAt ? doc.updatedAt.toISOString() : new Date().toISOString(),
   }));
@@ -151,6 +152,7 @@ export async function getSupplierById(id: string): Promise<ISupplier> {
     totalPurchases: s.totalPurchases || 0,
     totalPaid: s.totalPaid || 0,
     outstandingBalance: s.outstandingBalance || 0,
+    advanceBalance: s.advanceBalance || 0,
     createdAt: s.createdAt.toISOString(),
     updatedAt: s.updatedAt.toISOString(),
   };

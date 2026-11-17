@@ -22,6 +22,9 @@ import {
   Tag,
   Package,
   ClipboardList,
+  WalletCards,
+  Landmark,
+  RotateCcw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -46,11 +49,6 @@ export const NAV_ITEMS: NavItem[] = [
     icon: Package,
   },
   {
-    title: "Categories",
-    href: "/categories",
-    icon: Tag,
-  },
-  {
     title: "Inventory Overview",
     href: "/inventory",
     icon: Boxes,
@@ -66,36 +64,34 @@ export const NAV_ITEMS: NavItem[] = [
     icon: Receipt,
   },
   {
-    title: "Suppliers",
-    href: "/suppliers",
-    icon: Truck,
-  },
-  {
     title: "Purchase Register",
     href: "/purchases",
     icon: ClipboardList,
   },
   {
-    title: "Credit Ledger (Khata)",
-    href: "/ledger",
-    icon: BookOpenText,
-    badge: "Due Alert",
-    badgeVariant: "warning",
+    title: "Expenses",
+    href: "/expenses",
+    icon: WalletCards,
   },
   {
-    title: "Employee Staff",
+    title: "Cashbook",
+    href: "/cashbook",
+    icon: Landmark,
+  },
+  {
+    title: "Returns Management",
+    href: "/returns",
+    icon: RotateCcw,
+  },
+  {
+    title: "Employees",
     href: "/employees",
     icon: UserCheck,
     badge: "RBAC",
     badgeVariant: "agri",
   },
   {
-    title: "Reports & GST",
-    href: "/reports",
-    icon: BarChart3,
-  },
-  {
-    title: "System Settings",
+    title: "Settings",
     href: "/settings",
     icon: Settings,
   },

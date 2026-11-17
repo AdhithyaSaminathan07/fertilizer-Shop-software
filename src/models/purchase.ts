@@ -29,6 +29,12 @@ export interface IPurchaseDocument extends Document {
   outstandingAmount: number;
   paymentStatus: PurchasePaymentStatus;
   status: PurchaseStatus;
+  advanceAdjustments: Array<{
+    paymentId: mongoose.Types.ObjectId | string;
+    paymentNumber: string;
+    amount: number;
+    adjustedAt: Date;
+  }>;
   receipts: IPurchaseReceipt[];
   amendments: IPurchaseAmendment[];
   notes?: string;
@@ -193,6 +199,31 @@ const AmendmentSchema = new Schema(
   { _id: false }
 );
 
+const PurchaseAdvanceAdjustmentSchema = new Schema(
+  {
+    paymentId: {
+      type: Schema.Types.ObjectId,
+      ref: "SupplierPayment",
+      required: true,
+    },
+    paymentNumber: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    amount: {
+      type: Number,
+      required: true,
+      min: [0.01, "Adjustment amount must be positive"],
+    },
+    adjustedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+  { _id: false }
+);
+
 const PurchaseSchema = new Schema<IPurchaseDocument>(
   {
     purchaseNumber: {
@@ -297,6 +328,10 @@ const PurchaseSchema = new Schema<IPurchaseDocument>(
       enum: ["DRAFT", "PENDING_RECEIPT", "PARTIALLY_RECEIVED", "RECEIVED", "CANCELLED"],
       default: "PENDING_RECEIPT",
       index: true,
+    },
+    advanceAdjustments: {
+      type: [PurchaseAdvanceAdjustmentSchema],
+      default: [],
     },
     receipts: [PurchaseReceiptSchema],
     amendments: [AmendmentSchema],

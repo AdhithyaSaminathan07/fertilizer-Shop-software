@@ -6,6 +6,11 @@ import { Supplier } from "@/models/supplier";
 import { Product } from "@/models/product";
 import { Category } from "@/models/category";
 import { Batch } from "@/models/batch";
+import { SupplierPayment } from "@/models/supplier-payment";
+import {
+  absorbSupplierAdvanceWithProvenance,
+  generatePaymentNumber,
+} from "@/services/supplier-payment.service";
 import { logAuditEvent } from "@/lib/auth";
 import type {
   IPurchase,
@@ -738,13 +743,38 @@ async function createAndInwardPurchaseAtomic(
         });
       }
 
-      const outstandingAmount = Math.max(0, round2(params.grandTotal - params.amountPaid));
+      // Advance absorption during immediate inward with provenance tracking:
+      const purchaseId = new mongoose.Types.ObjectId();
+
+      // Net liability after applying purchase's own upfront payment
+      const upfrontApplied = Math.min(params.amountPaid, params.grandTotal);
+      const remainingLiability = Math.max(0, round2(params.grandTotal - upfrontApplied));
+
+      // Absorb available unallocated supplier advance if remaining liability exists
+      const { totalAbsorbed: absorbedAdvance, adjustments } =
+        await absorbSupplierAdvanceWithProvenance({
+          supplierId: params.supplier._id,
+          purchaseId,
+          purchaseNumber: params.purchaseNumber,
+          supplierInvoiceNumber: params.supplierInvoiceNumber,
+          liabilityAmount: remainingLiability,
+          session,
+        });
+
+      // Effective paid on this bill includes the upfront payment plus absorbed advance
+      const effectiveAmountPaid = round2(params.amountPaid + absorbedAdvance);
+      const finalOutstandingAmount = Math.max(0, round2(params.grandTotal - effectiveAmountPaid));
+
       const paymentStatus =
-        params.amountPaid >= params.grandTotal
+        finalOutstandingAmount === 0 && params.grandTotal > 0
           ? "PAID"
-          : params.amountPaid > 0
+          : effectiveAmountPaid > 0
           ? "PARTIALLY_PAID"
           : "UNPAID";
+
+      // If upfront payment exceeded grandTotal, the excess increases supplier advance credit
+      const excessUpfrontPayment = Math.max(0, round2(params.amountPaid - params.grandTotal));
+      const netAdvanceChange = round2(excessUpfrontPayment - absorbedAdvance);
 
       const receiptRecord: IPurchaseReceipt = {
         receiptNumber: `REC-${params.purchaseNumber}-01`,
@@ -760,6 +790,7 @@ async function createAndInwardPurchaseAtomic(
       const [newPurchase] = await Purchase.create(
         [
           {
+            _id: purchaseId,
             purchaseNumber: params.purchaseNumber,
             supplierId: params.supplier._id,
             supplierSnapshot: params.supplierSnapshot,
@@ -773,12 +804,13 @@ async function createAndInwardPurchaseAtomic(
             grandTotal: params.grandTotal,
             receivedQty: totalReceivedQty,
             recognizedInvoiceValue: params.grandTotal,
-            amountPaid: params.amountPaid,
+            amountPaid: effectiveAmountPaid,
             paymentMethod: params.paymentMethod,
             paymentReference: params.paymentReference,
-            outstandingAmount,
+            outstandingAmount: finalOutstandingAmount,
             paymentStatus,
             status: "RECEIVED",
+            advanceAdjustments: adjustments,
             receipts: [receiptRecord],
             amendments: [],
             notes: params.notes,
@@ -797,11 +829,44 @@ async function createAndInwardPurchaseAtomic(
           $inc: {
             totalPurchases: params.grandTotal,
             totalPaid: params.amountPaid,
-            outstandingBalance: outstandingAmount,
+            outstandingBalance: finalOutstandingAmount,
+            advanceBalance: netAdvanceChange,
           },
         },
         { session }
       );
+
+      // 5. If upfront payment exceeded grand total, register unallocated advance with provenance
+      if (excessUpfrontPayment > 0) {
+        const paymentNumber = await generatePaymentNumber(session);
+        await SupplierPayment.create(
+          [
+            {
+              paymentNumber,
+              supplierId: params.supplier._id,
+              supplierSnapshot: {
+                name: params.supplier.name,
+                phone: params.supplier.phone,
+                gstin: params.supplier.gstin,
+              },
+              paymentDate: params.purchaseDate || new Date(),
+              amount: excessUpfrontPayment,
+              paymentMethod: (params.paymentMethod as any) || "CASH",
+              paymentReference: params.paymentReference,
+              allocations: [],
+              unallocatedAmount: excessUpfrontPayment,
+              advanceRemaining: excessUpfrontPayment,
+              advanceConsumed: 0,
+              advanceAdjustments: [],
+              notes: `Excess advance credit from purchase bill ${params.purchaseNumber}`,
+              status: "RECORDED",
+              createdById: new mongoose.Types.ObjectId(actor.id),
+              createdByName: actor.name,
+            },
+          ],
+          { session }
+        );
+      }
     });
   } finally {
     await session.endSession();
@@ -1019,24 +1084,106 @@ export async function confirmPurchaseInward(
       purchase.updatedById = new mongoose.Types.ObjectId(actor.id);
       await purchase.save({ session });
 
-      // 3. Increment Supplier Financial Ledger atomically with proportional advance absorption
+      // 3. Increment Supplier Financial Ledger atomically with advance absorption and provenance
       const priorRecognized = round2(purchase.recognizedInvoiceValue - totalNewlyRecognizedValue);
-      const priorAppliedAdvance = Math.min(purchase.amountPaid, priorRecognized);
-      const newAppliedAdvance = Math.min(purchase.amountPaid, purchase.recognizedInvoiceValue);
-      const newlyAppliedAdvance = round2(newAppliedAdvance - priorAppliedAdvance);
-      const supplierOutstandingIncrement = round2(totalNewlyRecognizedValue - newlyAppliedAdvance);
+      const priorAppliedUpfront = Math.min(purchase.amountPaid, priorRecognized);
+      const newAppliedUpfront = Math.min(purchase.amountPaid, purchase.recognizedInvoiceValue);
+      const newlyAppliedUpfront = round2(newAppliedUpfront - priorAppliedUpfront);
+      const netInwardLiability = round2(totalNewlyRecognizedValue - newlyAppliedUpfront);
+
+      let absorbedSupplierAdvance = 0;
+      if (netInwardLiability > 0) {
+        const { totalAbsorbed, adjustments } = await absorbSupplierAdvanceWithProvenance({
+          supplierId: purchase.supplierId,
+          purchaseId: purchase._id,
+          purchaseNumber: purchase.purchaseNumber,
+          supplierInvoiceNumber: purchase.supplierInvoiceNumber,
+          liabilityAmount: netInwardLiability,
+          session,
+        });
+
+        absorbedSupplierAdvance = totalAbsorbed;
+        if (adjustments.length > 0) {
+          purchase.advanceAdjustments = purchase.advanceAdjustments || [];
+          for (const adj of adjustments) {
+            purchase.advanceAdjustments.push(adj as any);
+          }
+        }
+      }
+
+      // Check if bill had excess upfront payment upon full receipt completion
+      const excessUpfrontToCredit =
+        allFullyReceived && purchase.amountPaid > purchase.recognizedInvoiceValue
+          ? round2(purchase.amountPaid - purchase.recognizedInvoiceValue)
+          : 0;
+
+      if (absorbedSupplierAdvance > 0) {
+        purchase.amountPaid = round2(purchase.amountPaid + absorbedSupplierAdvance);
+        purchase.outstandingAmount = Math.max(
+          0,
+          round2(purchase.recognizedInvoiceValue - purchase.amountPaid)
+        );
+        purchase.paymentStatus =
+          purchase.outstandingAmount === 0 && purchase.recognizedInvoiceValue > 0
+            ? "PAID"
+            : purchase.amountPaid > 0
+            ? "PARTIALLY_PAID"
+            : "UNPAID";
+        await purchase.save({ session });
+      } else if (excessUpfrontToCredit > 0) {
+        purchase.amountPaid = purchase.recognizedInvoiceValue;
+        purchase.outstandingAmount = 0;
+        purchase.paymentStatus = "PAID";
+        await purchase.save({ session });
+      }
+
+      const supplierOutstandingIncrement = round2(netInwardLiability - absorbedSupplierAdvance);
+      const netAdvanceChange = round2(excessUpfrontToCredit - absorbedSupplierAdvance);
 
       await Supplier.findByIdAndUpdate(
         purchase.supplierId,
         {
           $inc: {
             totalPurchases: totalNewlyRecognizedValue,
-            totalPaid: newlyAppliedAdvance,
+            totalPaid: round2(newlyAppliedUpfront + excessUpfrontToCredit),
             outstandingBalance: supplierOutstandingIncrement,
+            advanceBalance: netAdvanceChange,
           },
         },
         { session }
       );
+
+      // Register excess upfront payment as unallocated advance credit with provenance
+      if (excessUpfrontToCredit > 0) {
+        const paymentNumber = await generatePaymentNumber(session);
+        await SupplierPayment.create(
+          [
+            {
+              paymentNumber,
+              supplierId: purchase.supplierId,
+              supplierSnapshot: {
+                name: purchase.supplierSnapshot.name,
+                phone: purchase.supplierSnapshot.phone,
+                gstin: purchase.supplierSnapshot.gstin,
+              },
+              paymentDate: new Date(),
+              amount: excessUpfrontToCredit,
+              paymentMethod: (purchase.paymentMethod as any) || "CASH",
+              paymentReference: purchase.paymentReference,
+              allocations: [],
+              unallocatedAmount: excessUpfrontToCredit,
+              advanceRemaining: excessUpfrontToCredit,
+              advanceConsumed: 0,
+              advanceAdjustments: [],
+              notes: `Excess advance credit from purchase bill ${purchase.purchaseNumber}`,
+              status: "RECORDED",
+              createdById: new mongoose.Types.ObjectId(actor.id),
+              createdByName: actor.name,
+            },
+          ],
+          { session }
+        );
+      }
     });
   } finally {
     await session.endSession();

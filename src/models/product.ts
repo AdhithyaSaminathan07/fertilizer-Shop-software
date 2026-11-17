@@ -13,6 +13,7 @@ export interface IProductDocument extends Document {
   primaryUnit: ProductUnit;
   unitConversion?: UnitConversion;
   minStockThreshold: number;
+  preferredReorderQty?: number;
   status: ProductStatus;
   currentStock: number;
   createdAt: Date;
@@ -97,6 +98,10 @@ const ProductSchema = new Schema<IProductDocument>(
       type: Number,
       default: 10,
       min: [0, "Minimum threshold cannot be negative"],
+    },
+    preferredReorderQty: {
+      type: Number,
+      min: [0, "Reorder quantity cannot be negative"],
     },
     status: {
       type: String,

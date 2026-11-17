@@ -21,6 +21,7 @@ export interface ISupplier {
   totalPurchases: number;
   totalPaid: number;
   outstandingBalance: number;
+  advanceBalance: number;
   createdAt: string;
   updatedAt: string;
 }

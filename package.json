@@ -15,6 +15,7 @@
     "test:product": "node scripts/test-product-suite.mjs",
     "test:phase5a": "node scripts/test-phase5a-suite.mjs",
     "test:phase5b": "node scripts/test-phase5b-suite.mjs",
+    "test:phase5d": "node scripts/test-phase5d-suite.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

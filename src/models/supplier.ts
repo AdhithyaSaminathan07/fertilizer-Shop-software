@@ -18,6 +18,7 @@ export interface ISupplierDocument extends Document {
   totalPurchases: number;
   totalPaid: number;
   outstandingBalance: number;
+  advanceBalance: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -96,6 +97,11 @@ const SupplierSchema = new Schema<ISupplierDocument>(
       type: Number,
       default: 0,
       min: [0, "Outstanding balance cannot be negative"],
+    },
+    advanceBalance: {
+      type: Number,
+      default: 0,
+      min: [0, "Advance balance cannot be negative"],
     },
   },
   {

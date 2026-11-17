@@ -1,6 +1,8 @@
 "use client";
 
 import * as React from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
   TrendingUp,
@@ -18,7 +20,14 @@ import {
   ChevronRight,
   Eye,
   RefreshCw,
+  WalletCards,
+  Coins,
+  Landmark,
+  Wallet,
+  TrendingDown,
 } from "lucide-react";
+import { formatCurrency, formatDate } from "@/lib/formatters";
+import type { IDashboardFinancials } from "@/types/expense";
 import {
   Card,
   CardHeader,
@@ -42,9 +51,38 @@ import { Dialog } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 
 export default function DashboardPage() {
+  const router = useRouter();
   const [viewState, setViewState] = React.useState<"live" | "skeleton" | "empty">("live");
   const [selectedPeriod, setSelectedPeriod] = React.useState("Today");
   const [farmerModalOpen, setFarmerModalOpen] = React.useState(false);
+  const [financials, setFinancials] = React.useState<IDashboardFinancials | null>(null);
+  const [inventoryData, setInventoryData] = React.useState<{
+    totalStockQuantity: number;
+    lowStockCount: number;
+    outOfStockCount: number;
+    nearExpiryBatchesCount: number;
+    expiredBatchesCount: number;
+  } | null>(null);
+
+  React.useEffect(() => {
+    fetch("/api/cashbook/dashboard")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.data) {
+          setFinancials(data.data);
+        }
+      })
+      .catch((err) => console.error("Error loading dashboard financials:", err));
+
+    fetch("/api/inventory/overview")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.data) {
+          setInventoryData(data.data);
+        }
+      })
+      .catch((err) => console.error("Error loading dashboard inventory:", err));
+  }, []);
 
   const kpis = [
     {
@@ -60,10 +98,10 @@ export default function DashboardPage() {
     {
       id: "inventory",
       title: "Inventory Stock In Hand",
-      value: "1,240 Bags",
-      change: "3 Low Stock",
+      value: inventoryData ? `${inventoryData.totalStockQuantity.toLocaleString()} Units` : "1,240 Bags",
+      change: inventoryData ? `${inventoryData.lowStockCount + inventoryData.outOfStockCount} Reorder Alerts` : "3 Low Stock",
       changeType: "warning" as const,
-      subtext: "Urea, DAP, Potash & Liquid Pesticides",
+      subtext: inventoryData ? `${inventoryData.expiredBatchesCount} expired, ${inventoryData.nearExpiryBatchesCount} near expiry` : "Urea, DAP, Potash & Liquid Pesticides",
       icon: Boxes,
       accentColor: "#2E9D59",
     },
@@ -242,10 +280,10 @@ export default function DashboardPage() {
           <Button
             variant="primary"
             size="sm"
-            leftIcon={<Plus className="h-3.5 w-3.5" />}
-            onClick={() => {}}
+            leftIcon={<Receipt className="h-3.5 w-3.5" />}
+            onClick={() => router.push("/billing")}
           >
-            Receive Stock
+            New Bill (PoS)
           </Button>
         </div>
       </div>
@@ -391,6 +429,87 @@ export default function DashboardPage() {
             })}
           </div>
 
+          {/* Financial Overview (Phase 8 Cashbook & Expenses) */}
+          <div className="rounded-xl border border-slate-200/90 bg-white p-4 shadow-xs space-y-3">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <Landmark className="h-4 w-4 text-[#176B3A]" />
+                <span className="text-xs font-bold text-slate-800 uppercase tracking-wider">
+                  Store Cash & Liquidity Overview
+                </span>
+                <Badge variant="agri" size="sm" className="text-[10px]">
+                  Cashbook Aggregation
+                </Badge>
+              </div>
+              <div className="flex items-center gap-2">
+                <Link
+                  href="/cashbook"
+                  className="text-xs font-medium text-[#176B3A] hover:underline flex items-center gap-1"
+                >
+                  View Cashbook <ChevronRight className="h-3 w-3" />
+                </Link>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-5 gap-3">
+              <div className="p-3 bg-emerald-50/50 rounded-lg border border-emerald-100">
+                <span className="text-[11px] font-semibold text-emerald-800 uppercase tracking-wider block">
+                  Store Cash Balance
+                </span>
+                <span className="text-lg font-black text-slate-900 mt-0.5 block">
+                  {financials ? formatCurrency(financials.currentCashBalance) : "—"}
+                </span>
+                <span className="text-[10px] text-slate-500">Physical in-hand</span>
+              </div>
+
+              <div className="p-3 bg-blue-50/50 rounded-lg border border-blue-100">
+                <span className="text-[11px] font-semibold text-blue-800 uppercase tracking-wider block">
+                  Today&apos;s Cash Inflow
+                </span>
+                <span className="text-lg font-black text-emerald-700 mt-0.5 block">
+                  +{financials ? formatCurrency(financials.todayCashReceived) : "—"}
+                </span>
+                <span className="text-[10px] text-slate-500">Sales & Khata settlements</span>
+              </div>
+
+              <div className="p-3 bg-rose-50/50 rounded-lg border border-rose-100">
+                <span className="text-[11px] font-semibold text-rose-800 uppercase tracking-wider block">
+                  Today&apos;s Cash Outflow
+                </span>
+                <span className="text-lg font-black text-rose-700 mt-0.5 block">
+                  -{financials ? formatCurrency(financials.todayCashPaid) : "—"}
+                </span>
+                <span className="text-[10px] text-slate-500">Expenses & supplier payouts</span>
+              </div>
+
+              <div className="p-3 bg-amber-50/50 rounded-lg border border-amber-100">
+                <span className="text-[11px] font-semibold text-amber-800 uppercase tracking-wider block">
+                  Today&apos;s Expenses
+                </span>
+                <span className="text-lg font-black text-slate-900 mt-0.5 block">
+                  {financials ? formatCurrency(financials.todayExpenses) : "—"}
+                </span>
+                <span className="text-[10px] text-slate-500">
+                  This month: {financials ? formatCurrency(financials.thisMonthExpenses) : "—"}
+                </span>
+              </div>
+
+              <div className="p-3 bg-purple-50/50 rounded-lg border border-purple-100 col-span-2 sm:col-span-4 lg:col-span-1">
+                <span className="text-[11px] font-semibold text-purple-800 uppercase tracking-wider block">
+                  Monthly Net Cashflow
+                </span>
+                <span className="text-lg font-black text-slate-900 mt-0.5 block">
+                  {financials
+                    ? formatCurrency(financials.thisMonthIncome - financials.thisMonthExpenses)
+                    : "—"}
+                </span>
+                <span className="text-[10px] text-slate-500">
+                  Income: {financials ? formatCurrency(financials.thisMonthIncome) : "—"}
+                </span>
+              </div>
+            </div>
+          </div>
+
           {/* Quick Operations Row */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[
@@ -502,15 +621,36 @@ export default function DashboardPage() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <AlertTriangle className="h-4 w-4 text-amber-600" />
-                      <CardTitle className="text-sm">Low Stock Alerts</CardTitle>
+                      <CardTitle className="text-sm">Low Stock & Expiry Alerts</CardTitle>
                     </div>
-                    <Badge variant="warning" size="sm">3 Items</Badge>
+                    <Badge variant="warning" size="sm">
+                      {inventoryData
+                        ? `${inventoryData.lowStockCount + inventoryData.outOfStockCount} Reorder`
+                        : "3 Items"}
+                    </Badge>
                   </div>
                   <CardDescription>
-                    Items below safety threshold requiring supplier purchase order
+                    Depleted stocks and batch expiry monitoring alerts
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="p-4 space-y-3">
+                  {inventoryData && (
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="p-2 bg-rose-50 border border-rose-200 rounded text-rose-800">
+                        <span className="font-bold">{inventoryData.outOfStockCount}</span> Out of Stock
+                      </div>
+                      <div className="p-2 bg-amber-50 border border-amber-200 rounded text-amber-800">
+                        <span className="font-bold">{inventoryData.lowStockCount}</span> Low Stock
+                      </div>
+                      <div className="p-2 bg-rose-50 border border-rose-200 rounded text-rose-800">
+                        <span className="font-bold">{inventoryData.expiredBatchesCount}</span> Expired Batches
+                      </div>
+                      <div className="p-2 bg-blue-50 border border-blue-200 rounded text-blue-800">
+                        <span className="font-bold">{inventoryData.nearExpiryBatchesCount}</span> Near Expiry
+                      </div>
+                    </div>
+                  )}
+
                   {lowStockAlerts.map((alert, i) => (
                     <div
                       key={i}
@@ -529,14 +669,70 @@ export default function DashboardPage() {
                     </div>
                   ))}
 
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full mt-2 text-xs"
-                    leftIcon={<RefreshCw className="h-3.5 w-3.5" />}
-                  >
-                    Generate Stock Reorder PO
-                  </Button>
+                  <div className="grid grid-cols-2 gap-2 pt-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-xs"
+                      onClick={() => router.push("/inventory/low-stock")}
+                    >
+                      View Low Stock
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-xs border-emerald-600 text-emerald-700 hover:bg-emerald-50"
+                      onClick={() => router.push("/inventory")}
+                    >
+                      Inventory Hub
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Recent Store Expenses (Phase 8) */}
+              <Card>
+                <CardHeader className="pb-3 border-b border-slate-100">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <WalletCards className="h-4 w-4 text-[#176B3A]" />
+                      <CardTitle className="text-sm">Recent Store Expenses</CardTitle>
+                    </div>
+                    <Link href="/expenses" className="text-xs text-[#176B3A] hover:underline">
+                      View All
+                    </Link>
+                  </div>
+                  <CardDescription>
+                    Latest business operational expenses recorded
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="p-4 space-y-2.5">
+                  {!financials || !financials.recentExpenses || financials.recentExpenses.length === 0 ? (
+                    <div className="text-xs text-slate-400 py-3 text-center">
+                      No recent expenses recorded.
+                    </div>
+                  ) : (
+                    financials.recentExpenses.map((exp: any) => (
+                      <div
+                        key={exp._id}
+                        className="flex items-center justify-between p-2.5 rounded-lg border border-slate-100 bg-slate-50/50 hover:bg-slate-100/60 transition-colors text-xs"
+                      >
+                        <div className="min-w-0 pr-2">
+                          <div className="font-semibold text-slate-800 truncate">
+                            {exp.description}
+                          </div>
+                          <div className="text-[11px] text-slate-500 flex items-center gap-1.5 mt-0.5">
+                            <span className="font-medium text-[#176B3A]">{exp.categoryName}</span>
+                            <span>•</span>
+                            <span>{formatDate(exp.expenseDate)}</span>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0 font-bold text-slate-900">
+                          {formatCurrency(exp.amount)}
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </CardContent>
               </Card>
 
